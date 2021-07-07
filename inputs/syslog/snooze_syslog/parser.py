@@ -56,7 +56,7 @@ def parse_rfc3164(msg):
     regex = r'<(?P<pri>\d{1,3})>' \
             + r'(?P<date>\S{3}\s{1,2}\d?\d \d{2}:\d{2}:\d{2}) ' \
             + r'(?P<host>\S+)' \
-            + r'( (?P<process>\S+?)(?:\[(?P<pid>\d+)\]):)? ' \
+            + r'(?: (?P<process>\S+?)(?:\[(?P<pid>\d+)\])?:)? ' \
             + r'(?P<message>.*)'
     m = re.match(regex, msg)
     if m:
@@ -67,6 +67,12 @@ def parse_rfc3164(msg):
             'host': groupdict['host'],
             'message': groupdict['message'],
         }
+
+        date_str = groupdict.get('date')
+        date = datetime.strptime(date_str, '%b %d %H:%M:%S')
+        date = date.replace(year=datetime.now().year)
+        
+        record['timestamp'] = date.astimezone().isoformat()
 
         process = groupdict.get('process')
         if process:
@@ -80,6 +86,23 @@ def parse_rfc3164(msg):
     else:
         raise Exception("Message doesn't match RFC3164 format")
 
+def parse_rfc5424_struct(structdata):
+    '''
+    Parse the Syslog RFC 5424 struct data string
+    Example input: '[exampleSDID@9999 a="1" b="2"][exampleSDID@8888 c="3" d="4"]'
+    Example output: {'structdata': {'exampleSDID@9999': {'a': '1', 'b': '2'}, 'exampleSDID@8888': {'c': '3', 'd': '4'}}}
+    '''
+    struct = {}
+    for data in re.findall(r'\[.*?\]', structdata):
+        data = data[1:-1]
+        sdid, keyvalues = data.split(' ', 1)
+        mystruct = {}
+        for keyvalue in re.findall(r'(?P<key>\S+)="(?P<value>.*?)"', keyvalues):
+            key, value = keyvalue
+            mystruct[key] = value
+        struct[sdid] = mystruct
+    return struct
+
 def parse_rfc5424(msg):
     '''Parse Syslog RFC 5424 message format'''
     regex = r'<(?P<pri>\d+)>1 ' \
@@ -88,18 +111,16 @@ def parse_rfc5424(msg):
             + r'(?P<process>\S+) ' \
             + r'(?P<pid>\S+) ' \
             + r'(?P<msgid>\S+) ' \
+            + r'(?P<structs>(?:\[.*?\])+ )?' \
             + r'(?P<message>.*)'
     m = re.match(regex, msg)
     if m:
         groupdict = m.groupdict()
-
-
         record = {
             'syslog_type': 'rfc5424',
             'pri': int(groupdict['pri']),
             'host': groupdict['host'],
             'process': groupdict['process'],
-            'pid': int(groupdict['pid']),
             'msgid': groupdict['msgid'],
             'message': groupdict['message'],
         }
@@ -107,6 +128,15 @@ def parse_rfc5424(msg):
         timestamp = groupdict['timestamp']
         if timestamp != '-':
             record['timestamp'] = timestamp
+
+        pid = groupdict['pid']
+        if pid != '-':
+            record['pid'] = int(pid)
+
+        structdata = groupdict.get('structs')
+        if structdata:
+            struct_dict = parse_rfc5424_struct(structdata)
+            record.update(struct_dict)
 
         return record
     else:
@@ -151,7 +181,7 @@ def parse_rsyslog(msg):
     regex = r'<(?P<pri>\d+)>' \
             + r'(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}) ' \
             + r'(?P<host>\S+)' \
-            + r'( (?P<process>\S+?)(?:\[(?P<pid>\d+)\]):)? ' \
+            + r'( (?P<process>\S+?)(?:\[(?P<pid>\d+)\])?:)? ' \
             + r'(?P<message>.*)'
     m = re.match(regex, msg)
     if m:
@@ -213,7 +243,7 @@ def parse_syslog(ipaddr, data, source='syslog'):
             record['source'] = source
             record['raw'] = msg
 
-            if not record['timestamp']:
+            if 'timestamp' not in record:
                 record['timestamp'] = datetime.now().astimezone().isoformat()
 
             facility, severity = decode_priority(record['pri'])

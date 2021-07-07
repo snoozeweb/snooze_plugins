@@ -16,7 +16,7 @@ from pysnmp.carrier.asyncore.dgram import udp
 from pysnmp.entity.rfc3413 import ntfrcv
 from pysnmp.entity.rfc3413.mibvar import oidToMibName, cloneFromMibValue
 from pysnmp.smi import view, compiler, builder
-from pysnmp.smi.error import MibNotFoundError
+from pysnmp.smi.error import MibNotFoundError, NoSuchNameError
 
 from pysnmp.proto.rfc1902 import *
 
@@ -79,7 +79,8 @@ class SNMPTrap:
         record = {}
         for oid, value in oids:
             key, value = self._process_mib(oid, value)
-            record[key] = value
+            if key and value:
+                record[key.replace('.', '_')] = value
         return record
 
     def _process_mib(self, oid, value):
@@ -94,8 +95,8 @@ class SNMPTrap:
                 for suffix in indices:
                     name += f".{suffix}"
                 return name, trap_value
-        except MibNotFoundError:
-            LOG.debug(f"Could not find OID: {oid}")
+        except (MibNotFoundError, NoSuchNameError) as err:
+            LOG.debug(f"Could not find OID %s: %s", oid, err)
             return None, None
 
     def reload(self):

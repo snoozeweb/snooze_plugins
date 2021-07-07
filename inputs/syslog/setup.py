@@ -5,7 +5,7 @@ with open("README.md", "r") as f:
 
 setup(
     name='snooze-syslog',
-    version='1.0.2',
+    version='1.0.4',
     author='Guillaume Ludinard, Florian Dematraz',
     author_email='guillaume.ludi@gmail.com, ',
     description="Syslog input plugin for snooze server",

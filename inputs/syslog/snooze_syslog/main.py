@@ -12,7 +12,7 @@ from threading import Thread
 from pathlib import Path
 
 from snooze_client import Snooze
-from snooze_syslog import parse_syslog
+from snooze_syslog.parser import parse_syslog
 
 LOG = logging.getLogger("snooze.syslog")
 logging.basicConfig(format="%(asctime)s - %(name)s: %(levelname)s - %(message)s", level=logging.DEBUG)

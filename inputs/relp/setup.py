@@ -20,6 +20,7 @@ setup(
         'pathlib',
         'relp',
         'snooze-client',
+        'snooze-syslog',
     ],
     classifiers=[],
 )
