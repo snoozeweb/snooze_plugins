@@ -3,6 +3,7 @@
 import logging
 import re
 from datetime import datetime
+from dateutil import parser
 
 SYSLOG_FACILITY_NAMES = [
     "kern",
@@ -58,9 +59,9 @@ def parse_rfc3164(msg):
             + r'(?P<host>\S+)' \
             + r'(?: (?P<process>\S+?)(?:\[(?P<pid>\d+)\])?:)? ' \
             + r'(?P<message>.*)'
-    m = re.match(regex, msg)
-    if m:
-        groupdict = m.groupdict()
+    match = re.match(regex, msg)
+    if match:
+        groupdict = match.groupdict()
         record = {
             'syslog_type': 'rfc3164',
             'pri': int(groupdict['pri']),
@@ -71,7 +72,7 @@ def parse_rfc3164(msg):
         date_str = groupdict.get('date')
         date = datetime.strptime(date_str, '%b %d %H:%M:%S')
         date = date.replace(year=datetime.now().year)
-        
+
         record['timestamp'] = date.astimezone().isoformat()
 
         process = groupdict.get('process')
@@ -89,8 +90,17 @@ def parse_rfc3164(msg):
 def parse_rfc5424_struct(structdata):
     '''
     Parse the Syslog RFC 5424 struct data string
-    Example input: '[exampleSDID@9999 a="1" b="2"][exampleSDID@8888 c="3" d="4"]'
-    Example output: {'structdata': {'exampleSDID@9999': {'a': '1', 'b': '2'}, 'exampleSDID@8888': {'c': '3', 'd': '4'}}}
+    Example input:
+    '[exampleSDID@9999 a="1" b="2"][exampleSDID@8888 c="3" d="4"]'
+    Example output:
+    ```
+    {
+        'structdata': {
+            'exampleSDID@9999': {'a': '1', 'b': '2'},
+            'exampleSDID@8888': {'c': '3', 'd': '4'}
+        }
+    }
+    ```
     '''
     struct = {}
     for data in re.findall(r'\[.*?\]', structdata):
@@ -113,9 +123,9 @@ def parse_rfc5424(msg):
             + r'(?P<msgid>\S+) ' \
             + r'(?P<structs>(?:\[.*?\])+ )?' \
             + r'(?P<message>.*)'
-    m = re.match(regex, msg)
-    if m:
-        groupdict = m.groupdict()
+    match = re.match(regex, msg)
+    if match:
+        groupdict = match.groupdict()
         record = {
             'syslog_type': 'rfc5424',
             'pri': int(groupdict['pri']),
@@ -147,9 +157,9 @@ def parse_cisco(msg):
     regex = r'<(?P<pri>\d+)>.*' \
             + r'(%(?P<fsm>[A-Z0-9_-]+)):? ' \
             + r'(?P<message>.*)'
-    m = re.match(regex, msg)
-    if m:
-        groupdict = m.groupdict()
+    match = re.match(regex, msg)
+    if match:
+        groupdict = match.groupdict()
         record = {
             'syslog_type': 'cisco',
             'pri': int(groupdict['pri']),
@@ -179,14 +189,14 @@ def parse_cisco(msg):
 def parse_rsyslog(msg):
     '''Parse Rsyslog's `RSYSLOG_ForwardFormat` format (High precision timestamp format)'''
     regex = r'<(?P<pri>\d+)>' \
-            + r'(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}) ' \
+            + r'(?P<timestamp>\d{4}-\d{2}-\d{2}T.*?) ' \
             + r'(?P<host>\S+)' \
             + r'( (?P<process>\S+?)(?:\[(?P<pid>\d+)\])?:)? ' \
             + r'(?P<message>.*)'
-    m = re.match(regex, msg)
-    if m:
-        groupdict = m.groupdict()
-        timestamp = datetime.strptime(groupdict['timestamp'], '%Y-%m-%dT%H:%M:%S')
+    match = re.match(regex, msg)
+    if match:
+        groupdict = match.groupdict()
+        timestamp = parser.isoparse(groupdict['timestamp'])
 
         record = {
             'syslog_type': 'rsyslog',
