@@ -8,10 +8,12 @@ import re
 
 from dateutil import parser
 from smtpd import SMTPServer
+
+from snooze_smtp.parser import parse_received
 from snooze_client import Snooze
 
 LOG = logging.getLogger("snooze.smtp")
-logging.basicConfig(format="%(asctime)s - %(name)s: %(levelname)s - %(message)s", level=logging.DEBUG)
+logging.basicConfig(format="%(name)s: %(levelname)s - %(message)s", level=logging.DEBUG)
 
 class SnoozeSMTPServer(SMTPServer):
     def __init__(self, domains, *args, **kwargs):
@@ -51,6 +53,15 @@ class SnoozeSMTPServer(SMTPServer):
         else:
             record['host'] = host
 
+        # Received field
+        relays = []
+        for relay in mail.get_all('Received'):
+            parsed_relay = parse_received(relay)
+            if parsed_relay:
+                relays.append(parsed_relay)
+        if relays:
+            record['relays'] = relays
+
         record['user'] = user
         record['message'] = record['Subject']
         plain = mail.get_body(preferencelist=('plain',))
@@ -75,6 +86,7 @@ class SnoozeSMTPServer(SMTPServer):
 
         LOG.debug("Will send alert to snooze: %s", record)
         self.snooze.alert(record)
+        LOG.debug("Successfully sent message to snooze")
 
 def main():
     '''Main loop'''
