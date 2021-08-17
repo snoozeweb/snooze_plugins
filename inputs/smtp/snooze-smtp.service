@@ -1,0 +1,11 @@
+[Unit]
+Description=Snooze SMTP input plugin
+After=network.service
+
+[Service]
+User=snooze
+ExecStart=/opt/snooze/bin/snooze-smtp
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
