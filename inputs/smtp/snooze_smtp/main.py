@@ -53,13 +53,16 @@ def make_record(mail, peer, mailfrom, rcpttos, domains):
         record['host'] = host
 
     # Received field
-    smtp['relays'] = map(parse_received, mail.get_all('Received', []))
+    smtp['relays'] = list(map(parse_received, mail.get_all('Received', [])))
 
     record['message'] = mail['Subject']
     body = {}
     smtp['body'] = body
-    body['plain'] = mail.get_body(preferencelist=('plain',))
-    body['html'] = mail.get_body(preferencelist=('html',))
+
+    for content_type in ['plain', 'html']:
+        data = mail.get_body(preferencelist=(content_type,))
+        if data:
+            body[content] = data.get_content()
 
     if mail.get('Date'):
         timestamp = parser.parse(mail['Date'])
