@@ -1,0 +1,15 @@
+[packages]
+falcon = "*"
+google-api-python-client = "*"
+protobuf = "*"
+pyparsing = "*"
+python-dateutil = "*"
+pyyaml = "*"
+snooze-client = "*"
+google-cloud-pubsub = "*"
+
+[dev-packages]
+pytest = "*"
+
+[requires]
+python_version = "3.6"
