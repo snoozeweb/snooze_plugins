@@ -1,10 +1,12 @@
 '''Helper to send alerts from pacemaker'''
 
 import os
+import re
 
-import dateutil
+import dateutil.parser
 
 from datetime import datetime
+from subprocess import Popen, TimeoutExpired, CalledProcessError
 
 from snooze_client import Snooze
 
@@ -22,7 +24,7 @@ KEYS = [
     'alert_nodeid',
     'alert_task',
     'alert_rc',
-    'alert_rcs',
+    'alert_rsc',
     'alert_interval',
     'alert_target_rc',
     'alert_status',
@@ -31,16 +33,51 @@ KEYS = [
     'alert_attribute_value',
 ]
 
-def alert():
-    '''Send an alert to pacemaker'''
+SEVERITY_KEYWORDS = {
+    'ok': 'ok',
+    'unknown': 'unknown',
+    'not running': 'err',
+    'cancelled': 'err',
+}
+
+def get_cluster_name():
+    '''Execute a pacemaker command to get the cluster name'''
+    try:
+        proc = Popen(['crm_attribute', '--query', '-n', 'cluster-name', '-q'], shell=True)
+        stdout, _ = proc.communicate(timeout=3)
+        if stdout:
+            lines = stdout.split('\n')
+            return lines[-1]
+        else:
+            return None
+    except [TimeoutExpired, CalledProcessError]:
+        return None
+
+def guess_severity(pacemaker):
+    '''Guess the severity based on the input dict'''
+    for (regex, keyword) in SEVERITY_KEYWORDS.items():
+        if re.search(regex, pacemaker['alert_desc'], re.I):
+            return keyword
+    else:
+        return 'err'
+
+def make_record(environment):
+    '''
+    Create a snooze record based on the pacemaker environment variables
+    '''
     pacemaker = {}
     record = {}
     record['pacemaker'] = pacemaker
     record['source'] = 'pacemaker'
 
     for key in KEYS:
-        value = os.environ.get("CRM_"+key)
-        pacemaker[key] = value
+        value = environment.get("CRM_"+key)
+        if value:
+            pacemaker[key] = value
+
+    cluster_name = get_cluster_name()
+    if cluster_name:
+        pacemaker['cluster_name'] = cluster_name
 
     if 'alert_timestamp_epoch' in pacemaker: # Pacemaker 2.0
         timestamp = pacemaker['alert_timestamp_epoch']
@@ -52,11 +89,32 @@ def alert():
 
     if 'alert_node' in pacemaker:
         record['host'] = pacemaker['alert_node']
-    if 'alert_desc' in pacemaker:
-        record['message'] = pacemaker['alert_desc']
     if 'alert_kind' in pacemaker:
-        record['process'] = "pacemaker/{}".format(pacemaker['alert_kind'])
+        record['process'] = pacemaker['alert_kind']
+    else:
+        record['process'] = 'pacemaker'
 
+    if pacemaker['alert_kind'] == 'node':
+        message = "Node '{}' is now '{}'".format(pacemaker['alert_node'], pacemaker['alert_desc'])
+    elif pacemaker['alert_kind'] == 'fencing':
+        message = "Fencing {}".format(pacemaker['alert_desc'])
+    elif pacemaker['alert_kind'] == 'resource':
+        message = "Resource operation '{}' for '{}': {}".format(
+            pacemaker['alert_task'],
+            pacemaker['alert_rsc'],
+            pacemaker['alert_desc']
+        )
+    else:
+        message = pacemaker['alert_desc']
+
+    record['message'] = message
+    record['severity'] = guess_severity(pacemaker)
+
+    return record
+
+def alert():
+    '''Send an alert to pacemaker'''
+    record = make_record(os.environ)
     server = Snooze()
     server.alert_with_defaults(record)
 
