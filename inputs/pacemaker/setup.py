@@ -5,7 +5,7 @@ with open("README.md", "r") as f:
 
 setup(
     name='snooze-pacemaker',
-    version='1.0.0',
+    version='1.0.1',
     author='Guillaume Ludinard, Florian Dematraz',
     author_email='guillaume.ludi@gmail.com, ',
     description="Snooze input plugin for pacemaker alerts",
@@ -17,10 +17,11 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'snooze-pacemaker = snooze_pacemaker.main:main',
+            'snooze-pacemaker = snooze_pacemaker.main:alert',
         ],
     },
     install_requires = [
         'snooze-client',
+        'python-dateutil',
     ],
 )
