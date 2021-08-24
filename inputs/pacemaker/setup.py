@@ -5,7 +5,7 @@ with open("README.md", "r") as f:
 
 setup(
     name='snooze-pacemaker',
-    version='1.0.1',
+    version='1.0.2',
     author='Guillaume Ludinard, Florian Dematraz',
     author_email='guillaume.ludi@gmail.com, ',
     description="Snooze input plugin for pacemaker alerts",
