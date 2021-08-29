@@ -6,22 +6,22 @@ import os
 import re
 import sys
 import logging
+import socket
+socket.setdefaulttimeout(10)
 from datetime import datetime, timedelta
 from dateutil import parser
 from google.cloud import pubsub_v1
 from apiclient.discovery import build
 from concurrent.futures import TimeoutError
 from google.oauth2 import service_account
-from wsgiref.simple_server import make_server, WSGIServer
+from waitress.adjustments import Adjustments
+from waitress.server import TcpWSGIServer
 from socketserver import ThreadingMixIn
 from pathlib import Path
 from snooze_client import Snooze
 from bot_parser import parser as bot_parser
 
 LOG = logging.getLogger("snooze.googlechat")
-
-class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
-    daemon_threads = True
 
 class Manager():
     
@@ -53,8 +53,14 @@ class Manager():
             msg['thread'] = {}
             msg['thread']['name'] = thread
         LOG.debug('Posting on {} msg {}'.format(space, msg))
-        resp = self.chat.spaces().messages().create(parent=space, body=msg).execute()
-        return resp
+        for n in range(3):
+            try:
+                resp = self.chat.spaces().messages().create(parent=space, body=msg).execute()
+                return resp
+            except:
+                log.exception(e)
+                continue
+        return None
 
     def process_record(self, req):
         spaces = req.media['spaces']
@@ -88,7 +94,7 @@ class Manager():
                 else:
                     website = req.prefix
                 timestamp = Manager.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), record.get('timestamp', datetime.now().astimezone()))
-                msg = "*Date:* {timestamp}\n*Host:* {host}\n*Source:* {source}\n*Process:* {process}\n*Severity:* {severity}\n*URL:* <{website}/web/?#/record?tab=Alerts&s=hash%3D{rhash}|Snooze>\n*Message:* {message}".format(timestamp=timestamp, host=record.get('host', 'Unknown'), source=record.get('source', 'Unknown'), process=record.get('process', 'Unknown'), severity=record.get('severity', 'Unknown'), website=website, rhash=record.get('hash'), message=record.get('message', 'No message'))
+                msg = "*Date:* {timestamp}\n*Host:* {host}\n*Source:* {source}\n*Process:* {process}\n*Severity:* {severity}\n*URL:* <{website}/web/?#/record?tab=All&s=hash%3D{rhash}|Snooze>\n*Message:* {message}".format(timestamp=timestamp, host=record.get('host', 'Unknown'), source=record.get('source', 'Unknown'), process=record.get('process', 'Unknown'), severity=record.get('severity', 'Unknown'), website=website, rhash=record.get('hash'), message=record.get('message', 'No message'))
             for space in spaces:
                 resp = self.send_message(msg, space=space)
                 threads.append(resp['thread']['name'])
@@ -104,13 +110,6 @@ class Manager():
             command, *text = message['message']['text'].lstrip().split(' ')
         command = command.casefold()
         text = ' '.join(text)
-        thread = message['message']['thread']['name']
-        aggregates = self.client.record(['IN', ['IN', thread, 'content.threads'], 'snooze_webhook_responses'])
-        if len(aggregates) == 0:
-            return 'Cannot find the corresponding alert!'
-        record = aggregates[0]
-        action_name = next(action_result.get('action_name') for action_result in record.get('snooze_webhook_responses', []) if thread in action_result.get('content', {}).get('threads', [])) or 'GoogleChatBot'
-        user = '{} via {}'.format(message['user']['displayName'], action_name)
         link = ''
         modification = []
         snooze_help = """Command: *@{}* snooze <duration> [condition]
@@ -119,12 +118,9 @@ class Manager():
 *condition* (text): _Condition for which this snooze entry will match_
 
 Example: _@{}_ snooze 6h host = example_host""".format(self.bot_name, self.bot_name)
-        if self.snooze_url:
-            link = ' <{}/web/?#/record?tab=All&s=hash%3D{}|[Link]>'.format(self.snooze_url, record['hash'])
-            snoozelink = ' <{}/web/?#/snooze?tab=All&s={}|[Link]>'.format(self.snooze_url, record['hash'])
         if command in ['help_snooze', '/help_snooze']:
             return snooze_help
-        if command in ['help', '/help']:
+        elif command in ['help', '/help']:
             if text == 'snooze':
                 return snooze_help
             else:
@@ -136,7 +132,17 @@ Example: _@{}_ snooze 6h host = example_host""".format(self.bot_name, self.bot_n
 *open, reopen, re-open* [message]: _Re-open an alert_
 *snooze* <duration> [condition]: _Snooze an alert (default 1h) (_`/help_snooze`_)_
 any other message: _Comment an alert_"""
-        elif command == 'snooze':
+        thread = message['message']['thread']['name']
+        aggregates = self.client.record(['IN', ['IN', thread, 'content.threads'], 'snooze_webhook_responses'])
+        if len(aggregates) == 0:
+            return 'Cannot find the corresponding alert!'
+        record = aggregates[0]
+        action_name = next(action_result.get('action_name') for action_result in record.get('snooze_webhook_responses', []) if thread in action_result.get('content', {}).get('threads', [])) or 'GoogleChatBot'
+        user = '{} via {}'.format(message['user']['displayName'], action_name)
+        if self.snooze_url:
+            link = ' <{}/web/?#/record?tab=All&s=hash%3D{}|[Link]>'.format(self.snooze_url, record['hash'])
+            snoozelink = ' <{}/web/?#/snooze?tab=All&s={}|[Link]>'.format(self.snooze_url, record['hash'])
+        if command == 'snooze':
             LOG.debug("Snooze Record {} with parameters: '{}'".format(str(record), text))
             duration_match = Manager.duration_regex.search(text)
             if duration_match:
@@ -319,14 +325,14 @@ class GoogleChatBot():
             self.config = {}
 
     def serve(self):
-        httpd = make_server(self.address, self.port, self.app, ThreadingWSGIServer)
+        wsgi_options = Adjustments(host=self.address, port=self.port)
+        httpd = TcpWSGIServer(self.app, adj=wsgi_options)
         LOG.info("Serving on port {}...".format(str(self.port)))
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            LOG.info("Shutting down...")
-            self.pubsub.kill()
-            httpd.shutdown()
+        httpd.run()
+        LOG.info("Exiting PubSub...")
+        self.pubsub.kill()
+        LOG.info("Shutting down...")
+
 
 def main():
     GoogleChatBot().serve()
