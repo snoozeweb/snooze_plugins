@@ -58,7 +58,7 @@ class Manager():
                 resp = self.chat.spaces().messages().create(parent=space, body=msg).execute()
                 return resp
             except:
-                log.exception(e)
+                LOG.exception(e)
                 continue
         return None
 
