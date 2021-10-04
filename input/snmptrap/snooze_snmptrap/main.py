@@ -1,28 +1,24 @@
-#!/usr/bin/env python
 '''SNMPTrap input plugin for Snooze'''
 
-import os
-import logging
 import datetime
-
+import logging
+import os
+import yaml
 from multiprocessing import JoinableQueue
 from threading import Thread
 from pathlib import Path
 
-import yaml
-
-from pysnmp.entity import engine, config
 from pysnmp.carrier.asyncore.dgram import udp
+from pysnmp.entity import engine, config
 from pysnmp.entity.rfc3413 import ntfrcv
 from pysnmp.entity.rfc3413.mibvar import oidToMibName, cloneFromMibValue
-from pysnmp.smi import view, compiler, builder
-from pysnmp.smi.error import MibNotFoundError, NoSuchNameError
-
 from pysnmp.proto.rfc1902 import *
+from pysnmp.smi import view, compiler, builder
+from pysnmp.smi.error import MibNotFoundError, NoSuchObjectError
 
 from snooze_client import Snooze
 
-LOG = logging.getLogger("snooze.snmptrap")
+log = logging.getLogger("snooze.snmptrap")
 logging.basicConfig(format="%(asctime)s - %(name)s: %(levelname)s - %(message)s", level=logging.DEBUG)
 
 MAP_TABLE = {
@@ -57,7 +53,7 @@ class SNMPTrap:
         '''Load the MIB files'''
         snmp_builder = builder.MibBuilder()
         snmp_view = view.MibViewController(snmp_builder)
-        mib_dirs = [f"file:/{path}" for path in self.mib_dirs]
+        mib_dirs = ["file:/{}".format(path) for path in self.mib_dirs]
         compiler.addMibCompiler(snmp_builder, sources=mib_dirs)
         snmp_builder.loadModules(*self.mib_list)
         self.view = snmp_view
@@ -65,14 +61,18 @@ class SNMPTrap:
     # pylint: disable=too-many-arguments, invalid-name
     def _cbFun(self, snmp_engine, state, context_id, context_name, var_binds, cbctx):
         '''Handler required by pysnmp. Following their naming convention'''
-        execContext = snmp_engine.observer.getExecutionContext('rfc3412.receiveMessage:request')
-        source_ip, _ = execContext['transportAddress']
-        record = self._handler(var_binds)
-        record['source_ip'] = source_ip
-        record['source'] = 'snmptrap'
-        now = datetime.datetime.now().astimezone()
-        record['timestamp'] = now.isoformat()
-        self.queue.put(record)
+        try:
+            execContext = snmp_engine.observer.getExecutionContext('rfc3412.receiveMessage:request')
+            source_ip, _ = execContext['transportAddress']
+            record = self._handler(var_binds)
+            record['source_ip'] = source_ip
+            record['source'] = 'snmptrap'
+            now = datetime.datetime.now().astimezone()
+            record['timestamp'] = now.isoformat()
+            self.queue.put(record)
+        except Exception as err:
+            log.warning(err)
+            log.warning("Failed to process: %s", var_binds)
 
     def _handler(self, oids):
         '''Handler called by each incoming SNMP trap'''
@@ -84,20 +84,25 @@ class SNMPTrap:
         return record
 
     def _process_mib(self, oid, value):
+        '''
+        Translate the OID and value depending on the MIB.
+        Will translate oid to human readable values.
+        Will translate the value to its SNMP type.
+        '''
         try:
             (symbol, module), indices = oidToMibName(self.view, oid)
             if (module, symbol) == ('SNMPv2-MIB', 'snmpTrapOID'):
                 (trap_mod, trap_sym), _ = oidToMibName(self.view, value)
-                return "oid", f"{trap_sym}::{trap_mod}"
+                return "oid", "{}::{}".format(trap_sym, trap_mod)
             else:
                 trap_value = cloneFromMibValue(self.view, module, symbol, value)
-                name = f"{module}::{symbol}"
+                name = "{}::{}".format(module, symbol)
                 for suffix in indices:
-                    name += f".{suffix}"
+                    name += ".{}".format(suffix)
                 return name, trap_value
-        except (MibNotFoundError, NoSuchNameError) as err:
-            LOG.debug(f"Could not find OID %s: %s", oid, err)
-            return None, None
+        except (MibNotFoundError, NoSuchObjectError):
+            log.warning("Could not find OID: %s", oid)
+            return str(oid), str(value)
 
     def reload(self):
         pass
@@ -115,7 +120,7 @@ class SNMPTrap:
 def snmp_map(record):
     '''Map certain common SNMPTrap OIDs to field names used by Snooze'''
     for key, value in record.items():
-        LOG.debug(f"Mapping {key}, {value}")
+        log.debug("Mapping %s, %s", key, value)
         # Mapping SNMP types to JSON serializable types
         value_type = type(value)
         if value_type == Null:
@@ -138,12 +143,12 @@ def snmp_map(record):
 
         record[key] = value
 
-        LOG.debug(f"New value: {value}")
+        log.debug("New value: %s", value)
 
         # Mapping SNMP OIDs to fields used by Snooze
         if key in MAP_TABLE:
             new_key = MAP_TABLE[key]
-            LOG.debug(f"Mapping {key}=>{new_key}")
+            log.debug("Mapping %s=>%s", key, new_key)
             record[new_key] = value
 
     return record
@@ -159,7 +164,7 @@ class Main:
             with config_file.open('r') as myfile:
                 self.config = yaml.safe_load(myfile.read())
         except Exception as err:
-            LOG.error("Error loading config: %s", err)
+            log.error("Error loading config: %s", err)
 
         if not isinstance(self.config, dict):
             self.config = {}
@@ -194,13 +199,13 @@ class Main:
     def send_worker(self, index):
         '''A worker for sending records to Snooze'''
         while True:
-            LOG.debug("[send_record] Waiting for queue")
+            log.debug("[send_record] Waiting for queue")
             record = self.send_queue.get()
             if not record:
-                LOG.info(f"Stopping send worker {index}")
+                log.info("Stopping send worker %d", index)
                 break
             snmp_map(record)
-            LOG.debug(f"Sending record to snooze: {record}")
+            log.debug("Sending record to snooze: %s", record)
             self.api.alert(record)
 
     def stop_threads(self, queue, threads):
@@ -218,7 +223,7 @@ class Main:
             for thread in threads:
                 thread.join()
         finally:
-            LOG.info("Stopping SNMP listener")
+            log.info("Stopping SNMP listener")
             transportDispatcher = self.snmp_server.snmp_engine.transportDispatcher
             transportDispatcher.jobFinished(1)
             transportDispatcher.unregisterRecvCbFun(recvId=None)

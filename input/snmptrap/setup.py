@@ -7,7 +7,7 @@ with open("README.md", "r") as f:
 
 setup(
     name='snooze-snmptrap',
-    version='1.0.3',
+    version='1.0.4',
     author='Guillaume Ludinard, Florian Dematraz',
     author_email='guillaume.ludi@gmail.com, ',
     description="SNMPTrap input plugin for snooze server",
