@@ -14,7 +14,6 @@ from snooze_client import Snooze
 KEYS = [
     'alert_kind',
     'alert_version',
-    'alert_recipient',
     'alert_node_sequence',
     'alert_timestamp',
     'alert_timestamp_epoch',
@@ -115,7 +114,10 @@ def make_record(environment):
 def alert():
     '''Send an alert to pacemaker'''
     record = make_record(os.environ)
-    server = Snooze()
+
+    url = os.environ['CRM_alert_recipient']
+    server = Snooze(url)
+
     server.alert_with_defaults(record)
 
 if __name__ == '__main__':
