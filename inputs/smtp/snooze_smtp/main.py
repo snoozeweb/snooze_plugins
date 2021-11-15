@@ -62,7 +62,7 @@ def make_record(mail, peer, mailfrom, rcpttos, domains):
     for content_type in ['plain', 'html']:
         data = mail.get_body(preferencelist=(content_type,))
         if data:
-            body[content] = data.get_content()
+            body[content_type] = data.get_content()
 
     if mail.get('Date'):
         timestamp = parser.parse(mail['Date'])
@@ -106,18 +106,21 @@ class SnoozeSMTPServer(SMTPServer):
         self.domains = domains
         super().__init__(*args, **kwargs)
 
-
-
     def process_message(self, peer, mailfrom, rcpttos, data, **kwargs):
         '''Method called every time an email is received'''
-        LOG.debug("Received mail from %s", mailfrom)
-        mail = email.message_from_bytes(data, policy=email.policy.SMTPUTF8)
+        try:
+            LOG.debug("Received mail from %s", mailfrom)
+            mail = email.message_from_bytes(data, policy=email.policy.SMTPUTF8)
 
-        record = make_record(mail, peer, mailfrom, rcpttos, self.domains)
+            record = make_record(mail, peer, mailfrom, rcpttos, self.domains)
 
-        LOG.debug("Will send alert to snooze: %s", record)
-        self.snooze.alert(record)
-        LOG.debug("Successfully sent message to snooze")
+            LOG.debug("Will send alert to snooze: %s", record)
+            self.snooze.alert(record)
+            LOG.debug("Successfully sent message to snooze")
+            return None
+        except Exception as err:
+            LOG.error()
+            return None
 
 def main():
     '''Main loop'''
