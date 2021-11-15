@@ -23,7 +23,7 @@ setup(
             'snooze-snmptrap = snooze_snmptrap.main:main',
         ],
     },
-    install_requires = [
+    install_requires=[
         'snooze-client',
         'PyYAML',
         'pathlib',
