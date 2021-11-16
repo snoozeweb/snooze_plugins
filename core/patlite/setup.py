@@ -6,7 +6,7 @@ with open("README.md", "r") as f:
     long_description = f.read()
 
 setup(
-    name="patlite-plugin",
+    name="snooze-patlite",
     version=version,
     description='Patlite plugin for Snooze',
     url='https://github.com/snoozeweb/snooze',
