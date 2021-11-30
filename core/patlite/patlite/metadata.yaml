@@ -15,30 +15,30 @@ widgets:
     patlite:
         vue_component: PatliteWidget
         name: Patlite
-        icon: traffic-light 
+        icon: traffic-light
         form:
             host:
                 display_name: Host
                 component: String
-                description: 'Host address of the Patlite'
+                description: Host address of the Patlite
                 required: true
             port:
                 display_name: Port
                 component: Number
-                description: 'Port number of the Patlite'
+                description: Port number of the Patlite
                 default_value: 10000
 action_form:
-  host:
-    display_name: Host
-    component: String
-    description: Address of the Patlite
-    required: true
-  port:
-    display_name: Port
-    component: Number
-    description: Port of the Patlite
-    default_value: 10000
-  lights:
-    display_name: Lights
-    component: Patlite
-    description: Lights of the Patlite to turn on when triggering this alert
+    host:
+        display_name: Host
+        component: String
+        description: Host address of the Patlite
+        required: true
+    port:
+        display_name: Port
+        component: Number
+        description: Port number of the Patlite
+        default_value: 10000
+    lights:
+        display_name: Lights
+        component: Patlite
+        description: Lights of the Patlite to turn on when triggering this alert
