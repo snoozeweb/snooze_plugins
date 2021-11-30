@@ -9,7 +9,7 @@ The syslog plugin listen in UDP and TCP, and can detect and parse the following 
 # Installation
 
 ```console
-$ sudo /opt/snooze/bin/pip install snooze-syslog
+$ sudo /opt/snooze/bin/pip install git+https://github.com/snoozeweb/snooze_plugins.git#subdirectory=input/syslog
 $ sudo tee <<SERVICE >/etc/systemd/system/snooze-syslog.service
 [Unit]
 Description=Snooze syslog input plugin

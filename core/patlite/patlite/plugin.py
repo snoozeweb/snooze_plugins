@@ -14,8 +14,10 @@ class Patlite(Plugin):
         '''
         host = options.get('host')
         port = options.get('port')
-        lights = [k+': '+v for k,v in options.get('lights').items() if v != 'off']
-        output = host + ' @ ' + " - ".join(lights)
+        output = host + ':' + str(port)
+        lights = [k+': '+v for k,v in options.get('lights', {}).items() if v != 'off']
+        if lights:
+            output += ' @ ' + ' - '.join(lights)
         return output
 
     def send(self, record, options):
