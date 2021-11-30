@@ -119,7 +119,7 @@ class SnoozeSMTPServer(SMTPServer):
             LOG.debug("Successfully sent message to snooze")
             return None
         except Exception as err:
-            LOG.error()
+            LOG.error(err)
             return None
 
 def main():
