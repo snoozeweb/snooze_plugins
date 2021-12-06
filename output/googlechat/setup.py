@@ -5,7 +5,7 @@ with open("README.md", "r") as f:
 
 setup(
     name='snooze-googlechat',
-    version='1.0.3',
+    version='1.0.4',
     author='Florian Dematraz, Guillaume Ludinard',
     author_email='florian.dematraz@snoozeweb.net, ',
     description="Google Chat Bot ouput plugin for snooze server",
@@ -30,4 +30,7 @@ setup(
         'pyyaml',
         'snooze-client',
     ],
+    extras_require={
+        'pyparsing': ['httplib2>=0.20.2'],
+    },
 )

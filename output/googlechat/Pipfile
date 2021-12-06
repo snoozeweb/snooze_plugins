@@ -1,6 +1,7 @@
 [packages]
 falcon = "*"
 google-api-python-client = "*"
+httplib2 >= 0.20.2
 protobuf = "*"
 pyparsing = "*"
 python-dateutil = "*"
