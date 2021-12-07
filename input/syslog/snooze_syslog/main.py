@@ -1,198 +1,118 @@
+'''Main class for managing the syslog daemon'''
+
 import logging
 import os
-import platform
-import ssl
 import sys
+from threading import Event
+
 import yaml
-
-from multiprocessing import JoinableQueue, Process
-from multiprocessing.pool import ThreadPool as Pool
-from socketserver import TCPServer, ThreadingMixIn, StreamRequestHandler, DatagramRequestHandler, UDPServer
-from threading import Thread
+#import prometheus_client
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
+from queue import Queue, Empty
 from snooze_client import Snooze
+
 from snooze_syslog.parser import parse_syslog
+from snooze_syslog.udp import UDPListener
+from snooze_syslog.tcp import TCPListener
 
 LOG = logging.getLogger("snooze.syslog")
-logging.basicConfig(format="%(asctime)s - %(name)s: %(levelname)s - %(message)s", level=logging.DEBUG)
+logging.basicConfig(format="%(name)s: %(levelname)s - %(message)s", level=logging.INFO)
 
-class ThreadedTCPServer(ThreadingMixIn, TCPServer, object):
-    '''Multi-threaded TCPServer'''
-    def __init__(self, queue, config, address, requestHandlerClass):
-        self.queue = queue
-        self.config = config
-        LOG.debug("Starting mutlithreaded TCP receiver")
-        TCPServer.__init__(self, address, requestHandlerClass, bind_and_activate=True)
+def load_config():
+    '''Load the configuration file'''
+    config = {}
+    config_file = Path(os.environ.get('SNOOZE_SYSLOG_CONFIG') or '/etc/snooze/syslog.yaml')
+    try:
+        with config_file.open('r') as myfile:
+            config = yaml.safe_load(myfile.read())
+    except Exception as err:
+        LOG.warning("Error loading config: %s", err)
 
-    def get_request(self):
-        if self.config.get('ssl'):
-            (socket, addr) = TCPServer.get_request(self)
-            ssl_socket = ssl.wrap_socket(
-                socket,
-                server_side=True,
-                certfile=self.config.get('certfile'),
-                keyfile=self.config.get('keyfile'),
-            )
-            return (ssl_socket, addr)
-        else:
-            return TCPServer.get_request(self)
+    if not isinstance(config, dict):
+        config = {}
 
-    def finish_request(self, request, client_address):
-        self.RequestHandlerClass(request, client_address, self)
+    return config
 
-    def server_close(self):
-        self.socket.close()
-        self.shutdown()
-        return TCPServer.server_close(self)
-
-class UDPHandler(DatagramRequestHandler):
-    '''Handler for UDPServer'''
-    def handle(self):
-        queue = self.server.queue
-        client_addr = self.client_address[0].encode().decode()
-        for line in self.rfile:
-            LOG.debug(f"[udp] Received from {client_addr}: {line}")
-            queue.put((client_addr, line))
-
-class QueuedTCPRequestHandler(StreamRequestHandler):
-    '''Handler for TCPServer'''
-    def __init__(self, request, client_address, server):
-        self.queue = server.queue
-        LOG.debug("Starting QueuedTCPRequestHandler")
-        StreamRequestHandler.__init__(self, request, client_address, server)
-
-    def handle(self):
-        client_addr = self.client_address[0].encode().decode()
-        for line in self.rfile:
-            LOG.debug(f"[tcp] Received from {client_addr}: {line}")
-            self.queue.put((client_addr, line))
-
-    def finish(self):
-        self.request.close()
-
-class SyslogDaemon(object):
+class SyslogDaemon:
+    '''Daemon for listening to syslog and sending to snooze'''
     def __init__(self):
-        self.parse_queue = JoinableQueue()
-        self.send_queue = JoinableQueue()
-
-        self.config = {}
-
-        config_file = os.environ.get('SNOOZE_SYSLOG_CONFIG') or '/etc/snooze/syslog.yaml'
-        config_file = Path(config_file)
-        try:
-            with config_file.open('r') as myfile:
-                self.config = yaml.safe_load(myfile.read())
-        except Exception as err:
-            LOG.error("Error loading config: %s", err)
-
-        if not isinstance(self.config, dict):
-            self.config = {}
+        config = load_config()
 
         # Config and defaults
-        snooze_uri = self.config.get('snooze_server')
+        self.queue = Queue()
+        self.exit = Event()
+
+        debug = config.get('debug', False)
+        print("Debug: %s" % debug)
+        if debug:
+            LOG.setLevel(logging.DEBUG)
+
+        snooze_uri = config.get('snooze_server')
         self.api = Snooze(snooze_uri)
 
-        parse_workers_pool = self.config.get('parse_workers', 4)
-        send_workers_pool = self.config.get('send_workers', 4)
+        self.workers = config.get('workers', 4)
 
-        self.listening_address = self.config.get('listening_address', '0.0.0.0')
-        self.listening_port = self.config.get('listening_port', 1514)
+        host = config.get('listening_address', '0.0.0.0')
+        port = config.get('listening_port', 1514)
 
-        self.tcp_server = ThreadedTCPServer(
-            self.parse_queue,
-            self.config,
-            (self.listening_address, self.listening_port),
-            QueuedTCPRequestHandler,
-        )
-        self.udp_server = UDPServer(
-            (self.listening_address, self.listening_port),
-            UDPHandler,
-        )
-        self.udp_server.queue = self.parse_queue
+        #prometheus_port = config.get('prometheus_port', 9301)
+        #prometheus_client.start_http_server(prometheus_port)
 
-        tcp_thread = Thread(target=self.tcp_server.serve_forever)
-        udp_thread = Thread(target=self.udp_server.serve_forever)
+        self.listeners = [
+            TCPListener(host, port, self.queue, config),
+            UDPListener(host, port, self.queue)
+        ]
 
+    def run(self):
+        '''Start the daemon'''
         try:
-            tcp_thread.start()
-            udp_thread.start()
-            parse_threads = self.start_parse_workers(parse_workers_pool)
-            send_threads = self.start_send_workers(send_workers_pool)
+            for listener in self.listeners:
+                listener.start()
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                LOG.info("Starting workers")
+                while not self.exit.is_set():
+                    try:
+                        entry = self.queue.get(0.1)
+                        pool.submit(self.worker, *entry)
+                    except Empty:
+                        continue
+        except Exception as err:
+            LOG.error(err)
+            self.stop()
+        except (SystemExit, KeyboardInterrupt) as err:
+            LOG.info("Stopping workers")
+            raise err
 
-            all_threads = [tcp_thread, udp_thread] + parse_threads + send_threads
+    def stop(self):
+        '''Stopping the daemon'''
+        self.exit.set()
+        for listener in self.listeners:
+            listener.stop()
 
-            for thread in all_threads:
-                thread.join()
-
-        finally:
-            LOG.info("Stopping TCP socket...")
-            self.tcp_server.shutdown()
-            LOG.info("Stopping TCP server thread...")
-            tcp_thread.join()
-            LOG.info("Stopping UDP socket...")
-            self.udp_server.shutdown()
-            LOG.info("Stopping UDP server thread...")
-            udp_thread.join()
-            LOG.info("Stopping parse workers...")
-            self.stop_threads(self.parse_queue, parse_threads)
-            LOG.info("Stopping send workers...")
-            self.stop_threads(self.send_queue, send_threads)
-
-    def start_parse_workers(self, worker_pool):
-        threads = []
-        for index in range(worker_pool):
-            mythread = Thread(target=self.parse_worker, args=(index,))
-            mythread.start()
-            threads.append(mythread)
-        return threads
-
-    def start_send_workers(self, worker_pool):
-        threads = []
-        for index in range(worker_pool):
-            mythread = Thread(target=self.send_worker, args=(index,))
-            mythread.start()
-            threads.append(mythread)
-        return threads
-
-    def parse_worker(self, index):
-        '''A worker for parsing syslog syntax'''
-        while True:
-            args = self.parse_queue.get()
-            if not args:
-                LOG.info(f"Stopping parse worker {index}")
-                break
-            record = parse_syslog(*args)
-            self.send_queue.put(record)
-
-    def send_worker(self, index):
-        '''A worker for sending records to Snooze'''
-        while True:
-            LOG.debug("[send_record] Waiting for queue")
-            records = self.send_queue.get()
-            if not records:
-                LOG.info(f"Stopping send worker {index}")
-                break
-            for record in records:
-                LOG.debug(f"Sending record to snooze: {record}")
+    def worker(self, client_addr, log):
+        # Parsing records
+        records = parse_syslog(client_addr, log)
+        # Sending to snooze
+        for record in records:
+            try:
+                LOG.debug("Sending record to snooze: %s", record)
                 self.api.alert(record)
-
-    def stop_threads(self, queue, threads):
-        for _ in threads:
-            queue.put(None)
-        for thread in threads:
-            thread.join()
+            except Exception as err:
+                LOG.error("Error sending record: %s", err)
+                continue
 
 def main():
-    LOG = logging.getLogger("snooze.syslog")
+    '''Main function running the syslog daemon'''
     try:
         LOG.info("Starting snooze syslog daemon")
-        SyslogDaemon()
+        daemon = SyslogDaemon()
+        daemon.run()
     except (SystemExit, KeyboardInterrupt):
-        LOG.info("Exiting snooze syslog daemon")
+        daemon.stop()
         sys.exit(0)
-    except Exception as e:
-        LOG.error(e, exc_info=1)
+    except Exception as err:
+        LOG.error(err, exc_info=1)
         sys.exit(1)
 
 if __name__ == '__main__':

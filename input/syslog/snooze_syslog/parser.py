@@ -44,7 +44,6 @@ SYSLOG_SEVERITY_NAMES = [
 ]
 
 LOG = logging.getLogger("snooze.syslog.parser")
-logging.basicConfig(format="%(asctime)s - %(name)s: %(levelname)s - %(message)s", level=logging.DEBUG)
 
 def decode_priority(pri):
     '''Decode the syslog facility and severity from the PRI'''

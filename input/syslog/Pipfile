@@ -4,6 +4,9 @@ python_version = "3.6"
 [packages]
 pathlib = "*"
 pyyaml = "*"
+snooze-client = "*"
+python-dateutil = "*"
 
 [dev-packages]
 pytest = "*"
+pysyslogclient = "*"
