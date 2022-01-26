@@ -19,14 +19,14 @@ from waitress.server import TcpWSGIServer
 from socketserver import ThreadingMixIn
 from pathlib import Path
 from snooze_client import Snooze
-from bot_parser import parser as bot_parser
+from .bot_parser import parser as bot_parser
 
 LOG = logging.getLogger("snooze.googlechat")
 
 class Manager():
-    
+
     date_regex = re.compile(r"[0-9]{1,4}-[0-9]{1,2}-[0-9]{1,2}T[0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}[\+\d]*")
-    duration_regex = re.compile(r"((\d+) *(hours|hour|h|weeks|week|w|days|day|d)|forever){0,1} *(.*)", re.IGNORECASE)
+    duration_regex = re.compile(r"((\d+) *(mins|min|m|hours|hour|h|weeks|week|w|days|day|d|months|month|years|year|y)|forever){0,1} *(.*)", re.IGNORECASE)
 
     def __init__(self, credentials, snooze_url=None, date_format=None, bot_name="Bot"):
         self.credendials = credentials
@@ -57,7 +57,7 @@ class Manager():
             try:
                 resp = self.chat.spaces().messages().create(parent=space, body=msg).execute()
                 return resp
-            except:
+            except Exception as e:
                 LOG.exception(e)
                 continue
         return None
@@ -117,7 +117,7 @@ class Manager():
 *duration* (forever or X mins|min|m|hours|hour|h|weeks|week|w|days|day|d|months|month|years|year|y): _Duration of this snooze entry_
 *condition* (text): _Condition for which this snooze entry will match_
 
-Example: _@{}_ snooze 6h host = example_host""".format(self.bot_name, self.bot_name)
+Example: _@{}_ *snooze* 6h host = example_host""".format(self.bot_name, self.bot_name)
         if command in ['help_snooze', '/help_snooze']:
             return snooze_help
         elif command in ['help', '/help']:
@@ -131,7 +131,9 @@ Example: _@{}_ snooze 6h host = example_host""".format(self.bot_name, self.bot_n
 *close, done* [message]: _Close an alert_
 *open, reopen, re-open* [message]: _Re-open an alert_
 *snooze* <duration> [condition]: _Snooze an alert (default 1h) (_`/help_snooze`_)_
-any other message: _Comment an alert_"""
+any other message: _Comment an alert_
+
+Example: _@{}_ *esc* severity = critical _Please check_""".format(self.bot_name)
         thread = message['message']['thread']['name']
         aggregates = self.client.record(['IN', ['IN', thread, 'content.threads'], 'snooze_webhook_responses'])
         if len(aggregates) == 0:
@@ -166,16 +168,16 @@ any other message: _Comment an alert_"""
                         elif duration_period.startswith('d'):
                             later = now + timedelta(days = int(duration_number))
                             duration = duration_number + ' day(s)'
-                        elif duration_period.casefold().startswith('w'):
+                        elif duration_period.startswith('w'):
                             later = now + timedelta(weeks = int(duration_number))
                             duration = duration_number + ' week(s)'
-                        elif duration_period.casefold().startswith('month'):
+                        elif duration_period.startswith('month'):
                             later = now + timedelta(days = int(duration_number)*30)
                             duration = duration_number + ' month(s)'
                         elif duration_period.startswith('m'):
                             later = now + timedelta(minutes = int(duration_number))
                             duration = duration_number + ' minute(s)'
-                        elif duration_period.casefold().startswith('y'):
+                        elif duration_period.startswith('y'):
                             later = now + timedelta(days = int(duration_number)*365)
                             duration = duration_number + ' year(s)'
                         else:
