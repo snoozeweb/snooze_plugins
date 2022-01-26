@@ -35,8 +35,8 @@ class PatliteResetRoute(Route):
             with Patlite(host, int(port)) as api:
                 api.reset()
         except Exception as err:
+            log.exception(err)
             raise falcon.HTTPInternalServerError(
                 title="Error querying Patlite",
                 description=str(err),
             )
-

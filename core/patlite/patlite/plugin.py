@@ -2,8 +2,9 @@
 
 from patlite.utils.patlite import Patlite as PatliteAPI, State
 from snooze.plugins.core import Plugin
-from logging import getLogger
+from logging import getLogger, DEBUG
 log = getLogger('snooze.action.patlite')
+log.setLevel(DEBUG)
 
 class Patlite(Plugin):
     def pprint(self, options):
@@ -15,19 +16,26 @@ class Patlite(Plugin):
         host = options.get('host')
         port = options.get('port')
         output = host + ':' + str(port)
-        lights = [k+': '+v for k,v in options.get('lights', {}).items() if v != 'off']
-        if lights:
-            output += ' @ ' + ' - '.join(lights)
+        sound = options.get('sound')
+        state = [k+': '+v for k, v in options.get('lights', {}).items() if v != 'off']
+        if sound:
+            state.append("sound: " + sound)
+        if state:
+            output += ' @ ' + ' - '.join(state)
         return output
 
-    def send(self, record, options):
+    def send(self, _record, options):
         '''
         Determine the action that will be taken when this action is invoked.
         It will set the lights and alarm of the Patlite.
         '''
         lights = options.get('lights')
+        sound = options.get('sound')
+        state = lights.copy()
+        if sound:
+            state['sound'] = sound
         host = options.get('host')
         port = int(options.get('port'))
-        log.debug("Will execute action patlite `{}:{}` with lights `{}`".format(host, port, lights))
+        log.debug("Will execute action patlite `%s:%s` state=%s", host, port, state)
         with PatliteAPI(host, port=port) as patlite:
-            patlite.set_full_state(State(**lights))
+            patlite.set_full_state(State(**state))
