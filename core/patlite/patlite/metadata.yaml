@@ -42,3 +42,14 @@ action_form:
         display_name: Lights
         component: Patlite
         description: Lights of the Patlite to turn on when triggering this alert
+    sound:
+        display_name: Sound
+        component: Selector
+        description: 'Sound the Patlite should produce'
+        default_value: 'short'
+        options:
+            - {text: 'Off', value: 'off'}
+            - {text: 'Short pulse', value: 'short'}
+            - {text: 'Long pulse', value: 'long'}
+            - {text: 'Tiny pulse', value: 'tiny'}
+            - {text: 'Continuous beep', value: 'beep'}

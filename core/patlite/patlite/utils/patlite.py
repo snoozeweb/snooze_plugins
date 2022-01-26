@@ -3,9 +3,13 @@
 import time
 import struct
 import sys
+from logging import getLogger, DEBUG
 
 from enum import Enum
 from socket import socket, AF_INET, SOCK_STREAM
+
+log = getLogger('snooze.action.patlite')
+log.setLevel(DEBUG)
 
 class Light(Enum):
     '''Light codes for Patlite'''
@@ -50,7 +54,7 @@ TINY  = b'\x03' # -_-_____-_-_____
 BEEP  = b'\x04' # ----------------
 
 COLORS = ['red', 'yellow', 'green', 'blue', 'white']
-STATE_KEYS = [*COLORS, 'alarm']
+STATE_KEYS = COLORS + ['sound']
 
 LIGHT_TO_CODE = {
     'off': OFF,
@@ -83,8 +87,15 @@ class State:
         for state, alias in self.mystate.items():
             if state in COLORS:
                 assert alias in ['off', 'on', 'blink1', 'blink2']
-            elif state == 'alarm':
+            elif state == 'sound':
                 assert alias in ['off', 'short', 'long', 'tiny', 'beep']
+
+    def __str__(self):
+        return (
+            'State['
+            + ' '.join([ f"{state}={alias}" for state, alias in self.mystate.items() ])
+            + ']'
+        )
 
     @staticmethod
     def unpack(data):
@@ -95,7 +106,7 @@ class State:
             code = codes[index]
             if state in COLORS:
                 mydict[state] = CODE_TO_LIGHT[code]
-            elif state == 'alarm':
+            elif state == 'sound':
                 mydict[state] = CODE_TO_BEEP[code]
         return State(**mydict)
 
@@ -106,7 +117,7 @@ class State:
             alias = self.mystate.get(state, 'off')
             if state in COLORS:
                 code = LIGHT_TO_CODE[alias]
-            elif state == 'alarm':
+            elif state == 'sound':
                 code = BEEP_TO_CODE[alias]
             data.append(code)
         return struct.pack('6c', *data)
@@ -129,7 +140,7 @@ class Patlite:
     def get_state(self):
         '''Get current status from Patlite'''
         data = self.read()
-        print("Received data: {}".format(data))
+        log.debug("Received state data: %s", data)
         state = State.unpack(data)
         return state
 
@@ -141,9 +152,9 @@ class Patlite:
 
     def set_full_state(self, state):
         '''Set the full state of the Patlite'''
-        print("Need to set state to: {}".format(state))
+        log.debug("Need to set state to: %s", state)
         data = state.pack()
-        print("Sending data: {}".format(data))
+        log.debug("Sending data to Patlite: %s", data)
         self.sock.sendall(WRITE_HEADER + data)
         ret = self.sock.recv(512)
         if ret == ACK:
