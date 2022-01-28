@@ -23,27 +23,54 @@ from .bot_parser import parser as bot_parser
 
 LOG = logging.getLogger("snooze.googlechat")
 
-class Manager():
+class GoogleChatBot():
 
     date_regex = re.compile(r"[0-9]{1,4}-[0-9]{1,2}-[0-9]{1,2}T[0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}[\+\d]*")
     duration_regex = re.compile(r"((\d+) *(mins|min|m|hours|hour|h|weeks|week|w|days|day|d|months|month|years|year|y)|forever){0,1} *(.*)", re.IGNORECASE)
 
-    def __init__(self, credentials, snooze_url=None, date_format=None, bot_name="Bot"):
-        self.credendials = credentials
-        self.chat = build('chat', 'v1', credentials=credentials)
+    def __init__(self):
+        scope = 'https://www.googleapis.com/auth/chat.bot'
+        self.load_config()
+        level = logging.INFO
+        if self.config.get('debug', False):
+            level = logging.DEBUG
+        logging.basicConfig(format="%(asctime)s - %(name)s: %(levelname)s - %(message)s", level=level)
+        if 'subscription_name' not in self.config:
+            LOG.error("Missing parameter 'subscription_name' in /etc/snooze/googlechat.yaml")
+            sys.exit()
+        credentials = service_account.Credentials.from_service_account_file(self.config.get('service_account_path',  os.environ['HOME'] + '/.sa_secrets.json'))
+        scoped_credentials = credentials.with_scopes([scope])
+
+        self.address = self.config.get('listening_address', '0.0.0.0')
+        self.port = self.config.get('listening_port', 5201)
+        self.app = falcon.App()
+        self.date_format = self.config.get('date_format', '%a, %b %d, %Y at %I:%M %p')
+        self.chat = build('chat', 'v1', credentials=scoped_credentials)
         self.client = Snooze()
-        self.bot_name = bot_name
-        if snooze_url:
-            if snooze_url.endswith('/'):
-                self.snooze_url = snooze_url[:-1]
-            else:
-                self.snooze_url = snooze_url
+        self.bot_name = self.config.get('bot_name', 'Bot')
+        self.snooze_url = self.config.get('snooze_url', '')
+        if self.snooze_url.endswith('/'):
+            self.snooze_url = self.snooze_url[:-1]
+        self.pubsub = PubSub(self, credentials)
+        self.pubsub.start()
+        self.app.add_route('/alert', AlertRoute(self))
+
+    def load_config(self):
+        config_path = Path(os.environ.get('SNOOZE_GOOGLE_CHATBOT_PATH', '/etc/snooze'))
+        config_file = config_path / 'googlechat.yaml'
+        if config_file.exists():
+            self.config = yaml.safe_load(config_file.read_text())
         else:
-            self.snooze_url = None
-        if date_format:
-            self.date_format = date_format
-        else:
-            self.date_format = '%a, %b %d, %Y at %I:%M %p'
+            self.config = {}
+
+    def serve(self):
+        wsgi_options = Adjustments(host=self.address, port=self.port)
+        httpd = TcpWSGIServer(self.app, adj=wsgi_options)
+        LOG.info("Serving on port {}...".format(str(self.port)))
+        httpd.run()
+        LOG.info("Exiting PubSub...")
+        self.pubsub.kill()
+        LOG.info("Shutting down...")
 
     def send_message(self, message, space=None, thread=None):
         msg = {}
@@ -66,26 +93,35 @@ class Manager():
         spaces = req.media['spaces']
         record = req.media['alert']
         message = req.media.get('message')
+        notification_from = record.get('notification_from')
         reply = req.media.get('reply')
         action_name = req.params['snooze_action_name']
 
         LOG.debug('Received record: {}'.format(record))
+        header = ''
+        if notification_from:
+            notif_name = notification_from.get('name', 'anonymous')
+            notif_message = notification_from.get('message')
+            header += 'From `{}`'.format(notif_name)
+            if notif_message:
+                header += ': {}'.format(notif_message)
+            header += "\n\n"
         threads = next((action_result.get('content', {}).get('threads', []) for action_result in record.get('snooze_webhook_responses', []) if action_result.get('action_name') == action_name), None)
         if threads:
             LOG.debug('Found threads: {}'.format(threads))
             if reply:
-                msg = Manager.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), reply)
+                msg = GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), reply)
             elif message:
                 msg = "*New escalation*\n" + message
             else:
-                timestamp = Manager.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), record.get('timestamp', datetime.now().astimezone()))
+                timestamp = GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), record.get('timestamp', datetime.now().astimezone()))
                 msg = "*New escalation*\n*Date:* {}".format(timestamp)
             for thread in threads:
-                self.send_message(msg, thread=thread)
+                self.send_message(header + msg, thread=thread)
         else:
             threads = []
             if message:
-                msg = Manager.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), message)
+                msg = GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), message)
             else:
                 if self.snooze_url:
                     website = self.snooze_url
@@ -93,10 +129,10 @@ class Manager():
                     website = req.forwarded_prefix
                 else:
                     website = req.prefix
-                timestamp = Manager.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), record.get('timestamp', datetime.now().astimezone()))
+                timestamp = GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), record.get('timestamp', datetime.now().astimezone()))
                 msg = "*Date:* {timestamp}\n*Host:* {host}\n*Source:* {source}\n*Process:* {process}\n*Severity:* {severity}\n*URL:* <{website}/web/?#/record?tab=All&s=hash%3D{rhash}|Snooze>\n*Message:* {message}".format(timestamp=timestamp, host=record.get('host', 'Unknown'), source=record.get('source', 'Unknown'), process=record.get('process', 'Unknown'), severity=record.get('severity', 'Unknown'), website=website, rhash=record.get('hash'), message=record.get('message', 'No message'))
             for space in spaces:
-                resp = self.send_message(msg, space=space)
+                resp = self.send_message(header + msg, space=space)
                 threads.append(resp['thread']['name'])
         return threads
 
@@ -146,7 +182,7 @@ Example: _@{}_ *esc* severity = critical _Please check_""".format(self.bot_name)
             snoozelink = ' <{}/web/?#/snooze?tab=All&s={}|[Link]>'.format(self.snooze_url, record['hash'])
         if command == 'snooze':
             LOG.debug("Snooze Record {} with parameters: '{}'".format(str(record), text))
-            duration_match = Manager.duration_regex.search(text)
+            duration_match = GoogleChatBot.duration_regex.search(text)
             if duration_match:
                 try:
                     now = datetime.now()
@@ -191,14 +227,16 @@ Example: _@{}_ *esc* severity = critical _Please check_""".format(self.bot_name)
                         condition = ['=', 'hash', '{}'.format(record['hash'])]
                     if later:
                         time_constraint = {"datetime": [{"from": now.astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"), "until": later.astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")}]}
-                    result = self.client.snooze('[{}] {}'.format(duration, record['hash']), condition=condition, ql=query, time_constraint=time_constraint)
+                    result = self.client.snooze('[{}] {}'.format(duration, record['hash']), condition=condition, ql=query, time_constraint=time_constraint, comment=user)
                     if result.get('rejected'):
                         return "Could not snooze alert! (Possibly a duplicate filter)"
                     LOG.debug('Done: {}'.format(result))
+                    self.client.comment('ack', user, 'google', record['uid'], 'Snoozed: [{}] {}'.format(duration, record['hash']))
+                    comment_text = 'Alert acknowledged successfully!' + link + "\n"
                     if later:
-                        return 'Snoozed for {}! Expires at *{}*{}'.format(duration, later.strftime(self.date_format), snoozelink)
+                        return comment_text + 'Snoozed for {}! Expires at *{}*{}'.format(duration, later.strftime(self.date_format), snoozelink)
                     else:
-                        return 'Snoozed forever! {}'.format(snoozelink)
+                        return comment_text + 'Snoozed forever! {}'.format(snoozelink)
                 except Exception as e:
                     LOG.debug(e)
                     return 'Could not snooze alert!'
@@ -263,11 +301,11 @@ class AlertRoute():
 
 class PubSub(threading.Thread):
 
-    def __init__(self, manager, credentials, subscription_name):
+    def __init__(self, manager, credentials):
         super(PubSub, self).__init__()
         self.manager = manager
         self.subscriber = pubsub_v1.SubscriberClient(credentials=credentials)
-        subscription_path = self.subscriber.subscription_path(credentials.project_id, subscription_name)
+        subscription_path = self.subscriber.subscription_path(credentials.project_id, self.manager.config.get('subscription_name'))
         self.future = self.subscriber.subscribe(subscription_path, self.callback)
 
     def callback(self, message):
@@ -293,47 +331,6 @@ class PubSub(threading.Thread):
         self.future.cancel()
         self.future.result()
         self.join()
-
-
-class GoogleChatBot():
-
-    def __init__(self):
-        scope = 'https://www.googleapis.com/auth/chat.bot'
-        self.load_config()
-        level = logging.INFO
-        if self.config.get('debug', False):
-            level = logging.DEBUG
-        logging.basicConfig(format="%(asctime)s - %(name)s: %(levelname)s - %(message)s", level=level)
-        if 'subscription_name' not in self.config:
-            LOG.error("Missing parameter 'subscription_name' in /etc/snooze/googlechat.yaml")
-            sys.exit()
-        credentials = service_account.Credentials.from_service_account_file(self.config.get('service_account_path',  os.environ['HOME'] + '/.sa_secrets.json'))
-        scoped_credentials = credentials.with_scopes([scope])
-
-        self.address = self.config.get('listening_address', '0.0.0.0')
-        self.port = self.config.get('listening_port', 5201)
-        self.app = falcon.App()
-        self.manager = Manager(scoped_credentials, self.config.get('snooze_url'), self.config.get('date_format'), self.config.get('bot_name', 'Bot'))
-        self.pubsub = PubSub(self.manager, credentials, self.config.get('subscription_name'))
-        self.pubsub.start()
-        self.app.add_route('/alert', AlertRoute(self.manager))
-
-    def load_config(self):
-        config_file = os.environ.get('SNOOZE_GOOGLE_CHATBOT_CONFIG_FILE', '/etc/snooze/googlechat.yaml')
-        path = Path(config_file)
-        if path.exists():
-            self.config = yaml.safe_load(path.read_text())
-        else:
-            self.config = {}
-
-    def serve(self):
-        wsgi_options = Adjustments(host=self.address, port=self.port)
-        httpd = TcpWSGIServer(self.app, adj=wsgi_options)
-        LOG.info("Serving on port {}...".format(str(self.port)))
-        httpd.run()
-        LOG.info("Exiting PubSub...")
-        self.pubsub.kill()
-        LOG.info("Shutting down...")
 
 
 def main():
