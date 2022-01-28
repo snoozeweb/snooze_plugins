@@ -5,7 +5,7 @@ with open("README.md", "r") as f:
 
 setup(
     name='snooze-googlechat',
-    version='1.0.5',
+    version='1.0.6',
     author='Florian Dematraz, Guillaume Ludinard',
     author_email='florian.dematraz@snoozeweb.net, ',
     description="Google Chat Bot ouput plugin for snooze server",
