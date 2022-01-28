@@ -97,7 +97,7 @@ class SyslogDaemon:
         for record in records:
             try:
                 LOG.debug("Sending record to snooze: %s", record)
-                self.api.alert(record)
+                self.api.alert_with_defaults(record)
             except Exception as err:
                 LOG.error("Error sending record: %s", err)
                 continue
