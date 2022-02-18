@@ -7,6 +7,7 @@ import re
 import sys
 import logging
 import socket
+import uuid
 socket.setdefaulttimeout(10)
 from datetime import datetime, timedelta
 from dateutil import parser
@@ -227,7 +228,7 @@ Example: _@{}_ *esc* severity = critical _Please check_""".format(self.bot_name)
                         condition = ['=', 'hash', '{}'.format(record['hash'])]
                     if later:
                         time_constraint = {"datetime": [{"from": now.astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"), "until": later.astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")}]}
-                    result = self.client.snooze('[{}] {}'.format(duration, record['hash']), condition=condition, ql=query, time_constraint=time_constraint, comment=user)
+                    result = self.client.snooze('[{}] {}'.format(duration, str(uuid.uuid4())[:8]), condition=condition, ql=query, time_constraint=time_constraint, comment=user)
                     if result.get('rejected'):
                         return "Could not snooze alert! (Possibly a duplicate filter)"
                     LOG.debug('Done: {}'.format(result))
