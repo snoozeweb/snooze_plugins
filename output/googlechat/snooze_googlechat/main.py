@@ -8,6 +8,7 @@ import sys
 import logging
 import socket
 import uuid
+import time
 socket.setdefaulttimeout(10)
 from datetime import datetime, timedelta
 from dateutil import parser
@@ -40,13 +41,12 @@ class GoogleChatBot():
             LOG.error("Missing parameter 'subscription_name' in /etc/snooze/googlechat.yaml")
             sys.exit()
         credentials = service_account.Credentials.from_service_account_file(self.config.get('service_account_path',  os.environ['HOME'] + '/.sa_secrets.json'))
-        scoped_credentials = credentials.with_scopes([scope])
+        self.credentials = credentials.with_scopes([scope])
 
         self.address = self.config.get('listening_address', '0.0.0.0')
         self.port = self.config.get('listening_port', 5201)
         self.app = falcon.App()
         self.date_format = self.config.get('date_format', '%a, %b %d, %Y at %I:%M %p')
-        self.chat = build('chat', 'v1', credentials=scoped_credentials)
         self.client = Snooze()
         self.bot_name = self.config.get('bot_name', 'Bot')
         self.snooze_url = self.config.get('snooze_url', '')
@@ -81,12 +81,14 @@ class GoogleChatBot():
             msg['thread'] = {}
             msg['thread']['name'] = thread
         LOG.debug('Posting on {} msg {}'.format(space, msg))
+        chat = build('chat', 'v1', credentials=self.credentials)
         for n in range(3):
             try:
-                resp = self.chat.spaces().messages().create(parent=space, body=msg).execute()
+                resp = chat.spaces().messages().create(parent=space, body=msg).execute()
                 return resp
             except Exception as e:
                 LOG.exception(e)
+                time.sleep(1)
                 continue
         return None
 
