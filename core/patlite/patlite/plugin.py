@@ -24,7 +24,7 @@ class Patlite(Plugin):
             output += ' @ ' + ' - '.join(state)
         return output
 
-    def send(self, _record, options):
+    def send(self, records, options):
         '''
         Determine the action that will be taken when this action is invoked.
         It will set the lights and alarm of the Patlite.
@@ -39,3 +39,4 @@ class Patlite(Plugin):
         log.debug("Will execute action patlite `%s:%s` state=%s", host, port, state)
         with PatliteAPI(host, port=port) as patlite:
             patlite.set_full_state(State(**state))
+        return records, []
