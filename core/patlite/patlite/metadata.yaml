@@ -4,6 +4,10 @@ desc: 'Set the light and alarm of a Patlite device'
 icon: 'traffic-light'
 auto_reload: false
 class: ''
+options:
+    batch:
+        default: True
+        hidden: True
 routes:
     /patlite/status:
         desc: 'Get the status of a patlite'
