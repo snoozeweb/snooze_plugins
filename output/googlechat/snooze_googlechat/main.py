@@ -9,6 +9,8 @@ import logging
 import socket
 import uuid
 import time
+import httplib2
+import google_auth_httplib2
 socket.setdefaulttimeout(10)
 from datetime import datetime, timedelta
 from dateutil import parser
@@ -22,6 +24,7 @@ from socketserver import ThreadingMixIn
 from pathlib import Path
 from snooze_client import Snooze
 from .bot_parser import parser as bot_parser
+from .bot_emoji import parse_emoji
 
 LOG = logging.getLogger("snooze.googlechat")
 
@@ -42,6 +45,18 @@ class GoogleChatBot():
             sys.exit()
         credentials = service_account.Credentials.from_service_account_file(self.config.get('service_account_path',  os.environ['HOME'] + '/.sa_secrets.json'))
         self.credentials = credentials.with_scopes([scope])
+        self.proxy = self.config.get('proxy', {})
+        proxyinfo = None
+        if self.proxy or 'HTTP_PROXY' in os.environ:
+            try:
+                proxy_host, proxy_port = os.environ.get('HTTP_PROXY', self.proxy.get('host', 'localhost:8080')).replace('http://', '').replace('https://', '').split(':')
+            except:
+                proxy_host = os.environ.get('HTTP_PROXY', self.proxy.get('host', 'localhost'))
+                proxy_port = 8080
+            proxyinfo = httplib2.ProxyInfo(httplib2.socks.PROXY_TYPE_HTTP, proxy_host, int(proxy_port), self.proxy.get('user'), self.proxy.get('pass'))
+            LOG.debug("Detected Proxy: {}:{}".format(proxy_host, proxy_port))
+        http = httplib2.Http(proxy_info=proxyinfo)
+        self.http = google_auth_httplib2.AuthorizedHttp(self.credentials, http=http)
 
         self.address = self.config.get('listening_address', '0.0.0.0')
         self.port = self.config.get('listening_port', 5201)
@@ -50,6 +65,8 @@ class GoogleChatBot():
         self.client = Snooze()
         self.bot_name = self.config.get('bot_name', 'Bot')
         self.snooze_url = self.config.get('snooze_url', '')
+        self.message_limit = self.config.get('message_limit', 10)
+        self.snooze_limit = self.config.get('snooze_limit', self.message_limit)
         if self.snooze_url.endswith('/'):
             self.snooze_url = self.snooze_url[:-1]
         self.pubsub = PubSub(self, credentials)
@@ -81,7 +98,7 @@ class GoogleChatBot():
             msg['thread'] = {}
             msg['thread']['name'] = thread
         LOG.debug('Posting on {} msg {}'.format(space, msg))
-        chat = build('chat', 'v1', credentials=self.credentials)
+        chat = build('chat', 'v1', http=self.http)
         for n in range(3):
             try:
                 resp = chat.spaces().messages().create(parent=space, body=msg).execute()
@@ -92,52 +109,99 @@ class GoogleChatBot():
                 continue
         return None
 
-    def process_record(self, req):
-        spaces = req.media['spaces']
-        record = req.media['alert']
-        message = req.media.get('message')
-        notification_from = record.get('notification_from')
-        reply = req.media.get('reply')
+    def process_records(self, req, medias):
+        multi = len(medias) > 1
+        spaces = {}
+        header = ''
+        footer = ''
+        website = ''
+        return_value = {}
+        if self.snooze_url:
+            website = self.snooze_url
+        elif hasattr(req, 'forwarded_prefix') and req.forwarded_prefix:
+            website = req.forwarded_prefix
+        else:
+            website = req.prefix
         action_name = req.params['snooze_action_name']
+        for req_media in medias[:self.message_limit]:
+            self.process_rec(spaces, req_media, action_name, multi, website)
+        for req_media in medias[self.message_limit:]:
+            self.process_rec(spaces, req_media, action_name, multi, website, False)
+        for space, content in spaces.items():
+            if multi:
+                timestamp = datetime.now().astimezone().strftime(self.date_format)
+                header = parse_emoji('::warning:: Received *{}* alerts on {} ::warning::\n\n'.format(len(content), timestamp))
+                if len(medias) > self.message_limit:
+                    footer = '\n...\n\nCheck all alerts in <{}/web|SnoozeWeb>'.format(website)
+            if not multi and content[0]['threads']:
+                for thread in content[0]['threads']:
+                    self.send_message(content[0]['msg'], thread=thread)
+                return_value = {content[0]['record_hash']: {'threads': content[0]['threads'], 'multithreads': content[0]['multithreads']}}
+            else:
+                resp = self.send_message(header + '\n'.join([message['msg'] for message in content if len(message['msg']) > 0]) + footer, space=space)
+                for message in content:
+                    if multi:
+                        message['multithreads'].append(resp['thread']['name'])
+                    else:
+                        message['threads'].append(resp['thread']['name'])
+                    return_value[message['record_hash']] = {'threads': message['threads'], 'multithreads': message['multithreads']}
+        if multi:
+            return return_value
+        else:
+            return list(return_value.values())[0]
+
+    def process_rec(self, spaces, req_media, action_name, multi, website, process = True):
+        rec_spaces = req_media['spaces']
+        record = req_media['alert']
+        message = req_media.get('message')
+        message_group = req_media.get('message_group')
+        reply = req_media.get('reply')
+        notification_from = record.get('notification_from')
 
         LOG.debug('Received record: {}'.format(record))
-        header = ''
-        if notification_from:
-            notif_name = notification_from.get('name', 'anonymous')
-            notif_message = notification_from.get('message')
-            header += 'From `{}`'.format(notif_name)
-            if notif_message:
-                header += ': {}'.format(notif_message)
-            header += "\n\n"
-        threads = next((action_result.get('content', {}).get('threads', []) for action_result in record.get('snooze_webhook_responses', []) if action_result.get('action_name') == action_name), None)
-        if threads:
-            LOG.debug('Found threads: {}'.format(threads))
-            if reply:
-                msg = GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), reply)
-            elif message:
-                msg = "*New escalation*\n" + message
-            else:
-                timestamp = GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), record.get('timestamp', datetime.now().astimezone()))
-                msg = "*New escalation*\n*Date:* {}".format(timestamp)
-            for thread in threads:
-                self.send_message(header + msg, thread=thread)
-        else:
-            threads = []
-            if message:
-                msg = GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), message)
-            else:
-                if self.snooze_url:
-                    website = self.snooze_url
-                elif hasattr(req, 'forwarded_prefix') and req.forwarded_prefix:
-                    website = req.forwarded_prefix
+        msg = ''
+        threads = next((action_result.get('content', {}).get('threads', []) for action_result in record.get('snooze_webhook_responses', []) if action_result.get('action_name') == action_name), [])
+        multithreads = next((action_result.get('content', {}).get('multithreads', []) for action_result in record.get('snooze_webhook_responses', []) if action_result.get('action_name') == action_name), [])
+        if process:
+            if multi:
+                msg = parse_emoji('::black-square-small::')
+            if notification_from:
+                notif_name = notification_from.get('name', 'anonymous')
+                notif_message = notification_from.get('message')
+                if multi:
+                    msg += 'From `{}`'.format(notif_name)
+                    if notif_message:
+                        header += ': {}'.format(notif_message)
+                    msg += "\n\n"
                 else:
-                    website = req.prefix
-                timestamp = GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), record.get('timestamp', datetime.now().astimezone()))
-                msg = "*Date:* {timestamp}\n*Host:* {host}\n*Source:* {source}\n*Process:* {process}\n*Severity:* {severity}\n*URL:* <{website}/web/?#/record?tab=All&s=hash%3D{rhash}|Snooze>\n*Message:* {message}".format(timestamp=timestamp, host=record.get('host', 'Unknown'), source=record.get('source', 'Unknown'), process=record.get('process', 'Unknown'), severity=record.get('severity', 'Unknown'), website=website, rhash=record.get('hash'), message=record.get('message', 'No message'))
-            for space in spaces:
-                resp = self.send_message(header + msg, space=space)
-                threads.append(resp['thread']['name'])
-        return threads
+                    msg += '`{}` '.format(notif_name)
+            if threads and not multi:
+                LOG.debug('Found threads: {}'.format(threads))
+                if reply:
+                    msg += GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), reply)
+                elif message:
+                    msg += parse_emoji("::warning:: *New escalation* ::warning::\n") + message
+                else:
+                    timestamp = GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), record.get('timestamp', str(datetime.now().astimezone())))
+                    msg += parse_emoji("::warning:: *New escalation* ::warning::\n*Date:* {}".format(timestamp))
+            else:
+                if multi:
+                    if threads:
+                        msg += '*[Esc]* '
+                    if message_group:
+                        msg += GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), message_group)
+                    else:
+                        msg += "[{source}] <{website}/web/?#/record?tab=All&s=hash%3D{rhash}|{host}> `{process}` {message}".format(source=record.get('source', 'Unknown'), website=website, rhash=record.get('hash'), host=record.get('host', 'Unknown'), process=record.get('process', 'Unknown'), message=record.get('message', 'No message'))
+                else:
+                    if message:
+                        msg += GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), message)
+                    else:
+                        timestamp = GoogleChatBot.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), record.get('timestamp', datetime.now().astimezone()))
+                        msg += "*Date:* {timestamp}\n*Host:* {host}\n*Source:* {source}\n*Process:* {process}\n*Severity:* {severity}\n*URL:* <{website}/web/?#/record?tab=All&s=hash%3D{rhash}|Snooze>\n*Message:* {message}".format(timestamp=timestamp, host=record.get('host', 'Unknown'), source=record.get('source', 'Unknown'), process=record.get('process', 'Unknown'), severity=record.get('severity', 'Unknown'), website=website, rhash=record.get('hash'), message=record.get('message', 'No message'))
+        for space in rec_spaces:
+            if space not in spaces:
+                spaces[space] = []
+            spaces[space].append({'msg': msg, 'record_hash': record.get('hash', ''), 'threads': threads, 'multithreads': multithreads})
 
     def process_user_message(self, message):
         LOG.debug("Received message: '{}'".format(message))
@@ -151,19 +215,20 @@ class GoogleChatBot():
         text = ' '.join(text)
         link = ''
         modification = []
-        snooze_help = """Command: *@{}* snooze <duration> [condition]
+        display_name = message['user']['displayName']
+        snooze_help = """`{}`: Command: *@{}* snooze <duration> [condition]
 
 *duration* (forever or X mins|min|m|hours|hour|h|weeks|week|w|days|day|d|months|month|years|year|y): _Duration of this snooze entry_
 *condition* (text): _Condition for which this snooze entry will match_
 
-Example: _@{}_ *snooze* 6h host = example_host""".format(self.bot_name, self.bot_name)
+Example: _@{}_ *snooze* 6h host = example_host""".format(display_name, self.bot_name, self.bot_name)
         if command in ['help_snooze', '/help_snooze']:
             return snooze_help
         elif command in ['help', '/help']:
             if text == 'snooze':
                 return snooze_help
             else:
-                return """List of available commands:
+                return """`{}`: List of available commands:
 
 *ack, acknowledge, ok* [message]: _Acknowledge an alert_
 *esc, escalate, re-escalate, reescalate, re-esc, reesc* <modification> [message]: _Re-escalate an alert_
@@ -172,25 +237,25 @@ Example: _@{}_ *snooze* 6h host = example_host""".format(self.bot_name, self.bot
 *snooze* <duration> [condition]: _Snooze an alert (default 1h) (_`/help_snooze`_)_
 any other message: _Comment an alert_
 
-Example: _@{}_ *esc* severity = critical _Please check_""".format(self.bot_name)
+Example: _@{}_ *esc* severity = critical _Please check_""".format(display_name, self.bot_name)
         thread = message['message']['thread']['name']
-        aggregates = self.client.record(['IN', ['IN', thread, 'content.threads'], 'snooze_webhook_responses'])
+        aggregates = self.client.record(['OR', ['IN', ['IN', thread, 'content.threads'], 'snooze_webhook_responses'], ['IN', ['IN', thread, 'content.multithreads'], 'snooze_webhook_responses']])
         if len(aggregates) == 0:
-            return 'Cannot find the corresponding alert!'
+            return parse_emoji('::cross-mark:: `{}`:Cannot find the corresponding alert!'.format(display_name))
         record = aggregates[0]
-        action_name = next(action_result.get('action_name') for action_result in record.get('snooze_webhook_responses', []) if thread in action_result.get('content', {}).get('threads', [])) or 'GoogleChatBot'
-        user = '{} via {}'.format(message['user']['displayName'], action_name)
+        action_name = next(action_result.get('action_name') for action_result in record.get('snooze_webhook_responses', []) if thread in action_result.get('content', {}).get('threads', []) + action_result.get('content', {}).get('multithreads', [])) or 'GoogleChatBot'
+        user = '{} via {}'.format(display_name, action_name)
         if self.snooze_url:
-            link = ' <{}/web/?#/record?tab=All&s=hash%3D{}|[Link]>'.format(self.snooze_url, record['hash'])
-            snoozelink = ' <{}/web/?#/snooze?tab=All&s={}|[Link]>'.format(self.snooze_url, record['hash'])
-        if command == 'snooze':
-            LOG.debug("Snooze Record {} with parameters: '{}'".format(str(record), text))
+            link = '<{}/web/?#/record?tab=All&s=hash%3D{}|[Link]>'.format(self.snooze_url, record['hash'])
+            snoozelink = '<{}/web/?#/snooze?tab=All&s={}|[Link]>'.format(self.snooze_url, record['hash'])
+        if command in ['snooze', '/snooze']:
+            LOG.debug("Snooze {} alerts with parameters: '{}'".format(len(aggregates), text))
             duration_match = GoogleChatBot.duration_regex.search(text)
             if duration_match:
                 try:
                     now = datetime.now()
-                    time_constraint = {}
-                    condition = []
+                    time_constraints = {}
+                    conditions = []
                     query = ''
                     duration_time = duration_match.group(1)
                     duration_number = duration_match.group(2)
@@ -220,72 +285,105 @@ Example: _@{}_ *esc* severity = critical _Please check_""".format(self.bot_name)
                             later = now + timedelta(days = int(duration_number)*365)
                             duration = duration_number + ' year(s)'
                         else:
-                            return "Invalid snooze filter duration syntax. Use `/help_snooze` to learn how to use this command"
+                            return parse_emoji("::cross-mark:: `{}`: Invalid snooze filter duration syntax. Use `/help_snooze` to learn how to use this command".format(display_name))
                     else:
                         later = now + timedelta(hours = 1)
                         duration = '1h'
                     if query_match:
                         query = query_match
+                        conditions = [None]
                     else:
-                        condition = ['=', 'hash', '{}'.format(record['hash'])]
+                        conditions = []
+                        for record in aggregates:
+                            conditions.append(['=', 'hash', '{}'.format(record['hash'])])
                     if later:
-                        time_constraint = {"datetime": [{"from": now.astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"), "until": later.astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")}]}
-                    result = self.client.snooze('[{}] {}'.format(duration, str(uuid.uuid4())[:8]), condition=condition, ql=query, time_constraint=time_constraint, comment=user)
-                    if result.get('rejected'):
-                        return "Could not snooze alert! (Possibly a duplicate filter)"
-                    LOG.debug('Done: {}'.format(result))
-                    self.client.comment('ack', user, 'google', record['uid'], 'Snoozed: [{}] {}'.format(duration, record['hash']))
-                    comment_text = 'Alert acknowledged successfully!' + link + "\n"
-                    if later:
-                        return comment_text + 'Snoozed for {}! Expires at *{}*{}'.format(duration, later.strftime(self.date_format), snoozelink)
+                        time_constraints = {"datetime": [{"from": now.astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"), "until": later.astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")}]}
+                    if len(conditions) <= self.snooze_limit:
+                        payload = [{'name': '[{}] {} ({})'.format(duration, display_name, str(uuid.uuid4())[:5]), 'condition': condition, 'ql': query, 'time_constraints': time_constraints, 'comment': display_name} for condition in conditions]
+                        result = self.client.snooze_batch(payload)
+                        if result.get('rejected'):
+                            return parse_emoji('::cross-mark:: `{}`: Could not Snooze alert(s)!'.format(display_name))
+                        LOG.debug('Done: {}'.format(result))
+                        ack_payload = [{'type': 'ack', 'record_uid': record['uid'], 'name': user, 'method': 'google', 'message': 'Snoozed for {}'.format(duration)} for record in aggregates]
+                        self.client.comment_batch(ack_payload)
+                        count = ''
+                        if len(aggregates) > 1:
+                            link = '<{}/web/?#/record?tab=Acknowledged|[Link]>'.format(self.snooze_url)
+                            snoozelink = '<{}/web/?#/snooze?tab=All|[Link]>'.format(self.snooze_url)
+                            count = '*{}* '.format(len(aggregates))
+                        comment_text = parse_emoji("::check-mark:: {}Alert(s) acknowledged successfully by `{}`! {}\n".format(count, display_name, link))
+                        if later:
+                            return comment_text + 'Snoozed for {}! Expires at *{}* {}'.format(duration, later.strftime(self.date_format), snoozelink)
+                        else:
+                            return comment_text + 'Snoozed forever! {}'.format(snoozelink)
                     else:
-                        return comment_text + 'Snoozed forever! {}'.format(snoozelink)
+                        return parse_emoji('::cross-mark:: `{}`: Cannot Snooze more than {} alert(s) without using an explicit condition. Please try again or use <{}/web/?#/snooze|SnoozeWeb>.'.format(display_name, self.snooze_limit, self.snooze_url))
                 except Exception as e:
-                    LOG.debug(e)
-                    return 'Could not snooze alert!'
+                    LOG.exception(e)
+                    return parse_emoji('::cross-mark:: `{}`: Could not Snooze alert(s)!'.format(display_name))
             else:
-                return "Invalid snooze filter syntax. Use `/help_snooze` to learn how to use this command"
-        elif command in ['ack', 'acknowledge', 'ok']:
-            LOG.debug('ACK Record {}'.format(str(record)))
+                return "`{}`: Invalid Snooze filter syntax. Use `/help_snooze` to learn how to use this command".format(display_name)
+        elif command in ['ack', 'acknowledge', 'ok', '/ack']:
+            LOG.debug('ACK {} alerts'.format(len(aggregates)))
             try:
-                self.client.comment('ack', user, 'google', record['uid'], text)
-                return 'Alert acknowledged successfully!' + link
-            except Exception as e:
-                LOG.debug(e)
-                return 'Could not acknowledge alert!'
-        elif command in ['esc', 'escalate', 're-escalate', 'reescalate', 're-esc', 'reesc']:
-            LOG.debug('ESC Record {}'.format(str(record)))
-            try:
-                modifications, comment = bot_parser(text)
-                self.client.comment('esc', user, 'google', record['uid'], comment, modifications)
-                return 'Alert re-escalated successfully!' + link
-            except Exception as e:
-                LOG.debug(e)
-                return 'Could not re-escalate alert!'
-        elif command in ['close', 'done']:
-            LOG.debug('CLOSE Record {}'.format(str(record)))
-            try:
-                self.client.comment('close', user, 'google', record['uid'], text)
-                return 'Alert closed successfully!' + link
-            except Exception as e:
-                LOG.debug(e)
-                return 'Could not close alert!'
-        elif command in ['open', 'reopen', 're-open']:
-            LOG.debug('OPEN Record {}'.format(str(record)))
-            try:
-                self.client.comment('open', user, 'google', record['uid'], text)
-                return 'Alert re-opened successfully!' + link
-            except Exception as e:
-                LOG.debug(e)
-                return 'Could not re-open alert!'
-        else:
-            LOG.debug('COMMENT Record {}'.format(str(record)))
-            try:
-                self.client.comment('', user, 'google', record['uid'], original_message)
-                return 'Comment added successfully! ' + link
+                payload = [{'type': 'ack', 'record_uid': record['uid'], 'name': user, 'method': 'google', 'message': text} for record in aggregates]
+                self.client.comment_batch(payload)
+                if len(aggregates) == 1:
+                    return parse_emoji('::check-mark:: Alert acknowledged successfully by `{}`! {}'.format(display_name, link))
+                else:
+                    return parse_emoji('::check-mark:: *{}* alerts acknowledged successfully by `{}`! <{}/web/?#/record?tab=Acknowledged|[Link]>'.format(len(aggregates), display_name, self.snooze_url))
             except Exception as e:
                 LOG.exception(e)
-                return 'Could not comment the alert!'
+                return parse_emoji('::cross-mark:: `{}`: Could not acknowledge alert(s)!'.format(display_name))
+        elif command in ['esc', 'escalate', 're-escalate', 'reescalate', 're-esc', 'reesc', '/esc']:
+            LOG.debug('ESC {} alerts'.format(len(aggregates)))
+            try:
+                modifications, comment = bot_parser(text)
+                payload = [{'type': 'esc', 'record_uid': record['uid'], 'name': user, 'method': 'google', 'message': comment, 'modifications': modifications} for record in aggregates]
+                self.client.comment_batch(payload)
+                if len(aggregates) == 1:
+                    return parse_emoji('::check-mark:: Alert re-escalated successfully by `{}`! {}'.format(display_name, link))
+                else:
+                    return parse_emoji('::check-mark:: *{}* alerts re-escalated successfully by `{}`! <{}/web/?#/record?tab=Re-escalated|[Link]>'.format(len(aggregates), display_name, self.snooze_url))
+            except Exception as e:
+                LOG.exception(e)
+                return parse_emoji('::cross-mark:: `{}`: Could not re-escalate alert(s)!'.format(display_name))
+        elif command in ['close', 'done', '/close']:
+            LOG.debug('CLOSE {} alerts'.format(len(aggregates)))
+            try:
+                payload = [{'type': 'close', 'record_uid': record['uid'], 'name': user, 'method': 'google', 'message': text} for record in aggregates]
+                self.client.comment_batch(payload)
+                if len(aggregates) == 1:
+                    return parse_emoji('::check-mark:: Alert closed successfully by `{}`! {}'.format(display_name, link))
+                else:
+                    return parse_emoji('::check-mark:: *{}* alerts closed successfully by `{}`! <{}/web/?#/record?tab=Closed|[Link]>'.format(len(aggregates), display_name, self.snooze_url))
+            except Exception as e:
+                LOG.exception(e)
+                return parse_emoji('::cross-mark:: `{}`: Could not close alert(s)!'.format(display_name))
+        elif command in ['open', 'reopen', 're-open', '/open']:
+            LOG.debug('OPEN {} alerts'.format(len(aggregates)))
+            try:
+                payload = [{'type': 'open', 'record_uid': record['uid'], 'name': user, 'method': 'google', 'message': text} for record in aggregates]
+                self.client.comment_batch(payload)
+                if len(aggregates) == 1:
+                    return parse_emoji('::check-mark:: Alert re-opened successfully by `{}`! {}'.format(display_name, link))
+                else:
+                    return parse_emoji('::check-mark:: *{}* alerts re-opened successfully by `{}`! <{}/web/?#/record?tab=Alerts&s=state=open|[SnoozeWeb]>'.format(len(aggregates), display_name, self.snooze_url))
+            except Exception as e:
+                LOG.exception(e)
+                return parse_emoji('::cross-mark:: `{}`: Could not re-open alert(s)!'.format(display_name))
+        else:
+            LOG.debug('COMMENT {} alerts'.format(len(aggregates)))
+            try:
+                payload = [{'record_uid': record['uid'], 'name': user, 'method': 'google', 'message': original_message} for record in aggregates]
+                self.client.comment_batch(payload)
+                if len(aggregates) == 1:
+                    return parse_emoji('::check-mark:: Comment added successfully by `{}`! {}'.format(display_name, link))
+                else:
+                    return parse_emoji('::check-mark:: *{}* comments added successfully by `{}`! <{}/web/?#/record|[Link]>'.format(len(aggregates), display_name, self.snooze_url))
+            except Exception as e:
+                LOG.exception(e)
+                return parse_emoji('::cross-mark:: `{}`: Could not comment alert(s)!'.format(display_name))
 
 class AlertRoute():
 
@@ -293,14 +391,15 @@ class AlertRoute():
         self.manager = manager
 
     def on_post(self, req, resp):
-        threads = self.manager.process_record(req)
-        LOG.debug("Threads: {}".format(threads))
+        medias = req.media
+        if not isinstance(medias, list):
+            medias = [medias]
+        response = self.manager.process_records(req, medias)
+        LOG.debug("Response: {}".format(response))
         resp.status = falcon.HTTP_200
-        if threads:
+        if response:
             resp.content_type = falcon.MEDIA_JSON
-            resp.media = {
-                'threads': threads,
-            }
+            resp.media = response
 
 class PubSub(threading.Thread):
 
