@@ -37,6 +37,13 @@ class Patlite(Plugin):
         host = options.get('host')
         port = int(options.get('port'))
         log.debug("Will execute action patlite `%s:%s` state=%s", host, port, state)
-        with PatliteAPI(host, port=port) as patlite:
-            patlite.set_full_state(State(**state))
-        return records, []
+        succeeded = records
+        failed = []
+        try:
+            with PatliteAPI(host, port=port) as patlite:
+                patlite.set_full_state(State(**state))
+        except Exception as err:
+            log.exception(err)
+            succeeded = []
+            failed = records
+        return succeeded, failed
