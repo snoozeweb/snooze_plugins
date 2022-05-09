@@ -25,10 +25,15 @@ $ sudo systemctl enable snooze-googlechat
 $ sudo systemctl start snooze-googlechat
 ```
 
-# Configuration
+# Prerequisites
 
-Make sure to configure [snooze-client](https://github.com/snoozeweb/snooze_client) beforehand since this plugin relies on it to be able to use snooze-server API
-Set up a google chatbot using Pub/Sub as connection settings ([How to create a google chatbot](https://developers.google.com/chat/concepts)) 
+* [Snooze Client](https://github.com/snoozeweb/snooze_client): For Snooze Google Chat daemon to use Snooze Server API
+* [Google Service Account](doc/01_Service_Account.md): Snooze Google Chat daemon credentials
+* [Google Pub/Sub](doc/02_PubSub.md): Communication between Snooze Google Chat daemon and Google Chat Bot
+* [Google Chat](doc/03_Chat.md): Google Chat Bot configuration
+* [Snooze Action (webhook)](doc/04_Action.md): Communication between Snooze Server and Snooze Google Chat daemon
+
+# Configuration
 
 This plugin's configuration is in the following YAML file: `/etc/snooze/googlechat.yaml` (can be overridden by the environment variable `SNOOZE_GOOGLE_CHATBOT_CONFIG_FILE`)
 
@@ -40,5 +45,7 @@ General options:
 * `listening_port` (Integer, defaults to `5201`): Port to listen to. If lower than 1024, need to run the process as root
 * `snooze_url` (String, defaults to `'http://localhost:5200'`): URL to Snooze Web UI
 * `date_format` (String, defaults to `'%a, %b %d, %Y at %I:%M %p'`): Date format
+* `message_limit` (Integer, defaults to `10`): Maximum number of alerts to explicitly show in the same thread
+* `snooze_limit` (Integer, defaults to `message_limit` value): Maximum number of alerts that can be snoozed at the same time without using an explicit condition
 * `bot_name` (String, defaults to `'Bot'`): Google Bot name
 * `debug` (Boolean, defaults to `false`): Show debug logs
