@@ -18,9 +18,19 @@ Click on **Create credentials** then click on **Service account**
 
 Put a _Service account name_ then click on **Done**
 
+## Add chat.bot Scope
+
+In order to have the chatbot being able to publish messages, a specific scope needs to be added to the service account
+
+Click on **Edit service account** then go to the **Details** tab
+
+In _Advanced settings_, copy the _Client ID_ then click on **View Google Workspace Admin Console**
+
+In _Security/API Controls/Domain-wide Delegation_, add the _Client ID_ with the scope `https://www.googleapis.com/auth/chat.bot`
+
 ## Generate credentials
 
-Click on **Edit service account** then go to the **Keys** tab
+In the service account configuration, go to the **Keys** tab
 
 Click on **Add Key** then **Create new key**. Select **JSON** as key type
 
