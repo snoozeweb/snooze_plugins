@@ -22,6 +22,18 @@ Configuration hints:
 
 In case you checked the permission `Everyone in Your Organization` earlier, you will need to publish the app and add it to the allowlist
 
+### Configure your OAuth consent screen
+
+This step is required in order to publish the app
+
+Go to the [OAuth consent screen](https://console.cloud.google.com/projectselector2/apis/credentials/consent) configuration page 
+
+Select **Internal** for the _Application type_
+
+Fill up the first form then click on **Save and Continue**
+
+You can leave the second form empty (Scopes)
+
 ### Publish the app
 
 Go to the [Google Workspace Marketplace SDK](https://console.cloud.google.com/marketplace/product/google/appsmarket-component.googleapis.com) page and enable it
