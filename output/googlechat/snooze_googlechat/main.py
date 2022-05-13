@@ -303,10 +303,15 @@ Example: _@{}_ *esc* severity = critical _Please check_""".format(display_name, 
                             snoozelink = '<{}/web/?#/snooze?tab=All|[Link]>'.format(self.snooze_url)
                             count = '*{}* '.format(len(aggregates))
                         comment_text = parse_emoji("::check-mark:: {}Alert(s) acknowledged successfully by `{}`! {}\n".format(count, display_name, link))
+                        warning_text = ''
+                        if len(result['data'].get('added', [])) > 0:
+                            res_cond = result['data']['added'][0].get('condition', [])
+                            if len(res_cond) > 0 and res_cond[0] == 'SEARCH':
+                                warning_text = parse_emoji("\n::warning:: Snooze filter condition `{}` might not be expected. Please double check in the Web interface".format(res_cond))
                         if later:
-                            return comment_text + 'Snoozed for {}! Expires at *{}* {}'.format(duration, later.strftime(self.date_format), snoozelink)
+                            return comment_text + parse_emoji('::check-mark::') + ' Snoozed for {}! Expires at *{}* {}'.format(duration, later.strftime(self.date_format), snoozelink) + warning_text
                         else:
-                            return comment_text + 'Snoozed forever! {}'.format(snoozelink)
+                            return comment_text + parse_emoji('::check-mark::') + ' Snoozed forever! {}'.format(snoozelink) + warning_text
                     else:
                         return parse_emoji('::cross-mark:: `{}`: Cannot Snooze more than {} alert(s) without using an explicit condition. Please try again or use <{}/web/?#/snooze|SnoozeWeb>.'.format(display_name, self.snooze_limit, self.snooze_url))
                 except Exception as e:
