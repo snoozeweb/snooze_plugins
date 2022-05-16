@@ -7,7 +7,6 @@ class: ''
 options:
     batch:
         default: True
-        hidden: True
 routes:
     /patlite/status:
         desc: 'Get the status of a patlite'
