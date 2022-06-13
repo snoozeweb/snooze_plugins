@@ -118,7 +118,7 @@ class GoogleChatBot():
             if multi:
                 timestamp = datetime.now().astimezone().strftime(self.date_format)
                 header = parse_emoji('::warning:: Received *{}* alerts on {} ::warning::\n\n'.format(len(content), timestamp))
-                if len(medias) > self.message_limit:
+                if len(content) > self.message_limit:
                     footer = '\n...\n\nCheck all alerts in <{}/web|SnoozeWeb>'.format(website)
             if not multi and content[0]['threads']:
                 for thread in content[0]['threads']:
@@ -205,6 +205,7 @@ class GoogleChatBot():
             text = ''
         command = command.casefold()
         link = ''
+        snoozelink = ''
         modification = []
         display_name = message['user']['displayName']
         snooze_help = """`{}`: Command: *@{}* snooze <duration> [condition]

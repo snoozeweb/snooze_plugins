@@ -1,11 +1,11 @@
 # Snooze Google Bot plugin
 
-This plugin was firstly meant to display alerts in Google Chat using a chatbot. Since it partialy wraps snooze server REST API, it can also be used to create/manage Snooze filters
+This plugin is used to display SnoozeWeb alerts in Google Chat using a chatbot. Users can also partially manage these alerts directly from the chat.
 
 # Installation
 
 ```console
-$ sudo /opt/snooze/bin/pip install snooze-googlechat
+$ sudo /opt/snooze/bin/pip install git+https://github.com/snoozeweb/snooze_plugins.git#subdirectory=output/googlechat
 $ sudo tee <<SERVICE /etc/systemd/system/snooze-googlechat.service
 [Unit]
 Description=Snooze googlechat output plugin
@@ -35,11 +35,11 @@ $ sudo systemctl start snooze-googlechat
 
 # Configuration
 
-This plugin's configuration is in the following YAML file: `/etc/snooze/googlechat.yaml` (can be overridden by the environment variable `SNOOZE_GOOGLE_CHATBOT_CONFIG_FILE`)
+This plugin's configuration is in the following YAML file: `/etc/snooze/googlechat.yaml` (`/etc/snooze` can be overridden by the environment variable `SNOOZE_GOOGLE_CHATBOT_PATH`)
 
 General options:
 
-* `subscription_name`\* (String): Google PubSub subscription name used to pull messages
+* `subscription_name`\* (String, **required**): Google PubSub subscription name used to pull messages
 * `service_account_path`\* (String, defaults to `'$HOME/.sa\_secrets.json'`): Fully qualified path of google's service account credentials
 * `listening_address` (String, defaults to `'0.0.0.0'`): Address to listen to
 * `listening_port` (Integer, defaults to `5201`): Port to listen to. If lower than 1024, need to run the process as root
