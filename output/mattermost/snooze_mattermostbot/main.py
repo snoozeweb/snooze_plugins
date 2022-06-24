@@ -325,7 +325,7 @@ Example: *@{}* **esc** severity = critical *Please check*""".format(display_name
         user = '{} via {}'.format(display_name, action_name)
         if self.snooze_url:
             link = '[[Link]]({}/web/?#/record?tab=All&s=hash%3D{})'.format(self.snooze_url, record['hash'])
-            snoozelink = '[[Link]]({}/web/?#/snooze?tab=All&s={})'.format(self.snooze_url, record['hash'])
+            snoozelink = '[[Link]]({}/web/?#/snooze?tab=All&s=hash%3D{})'.format(self.snooze_url, record['hash'])
         if command in ['snooze', '/snooze']:
             LOG.debug("Snooze {} alerts with parameters: '{}'".format(len(aggregates), text))
             duration_match = MattermostBot.duration_regex.search(text)
