@@ -3,17 +3,18 @@ name: 'Patlite'
 desc: 'Set the light and alarm of a Patlite device'
 icon: 'traffic-light'
 auto_reload: false
-class: ''
+route_defaults:
+    class_name: ~
 options:
     batch:
         default: True
 routes:
     /patlite/status:
         desc: 'Get the status of a patlite'
-        class: PatliteStatusRoute
+        class_name: PatliteStatusRoute
     /patlite/reset:
         desc: 'Reset a patlite status'
-        class: PatliteResetRoute
+        class_name: PatliteResetRoute
 widgets:
     patlite:
         vue_component: PatliteWidget
