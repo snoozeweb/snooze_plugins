@@ -54,6 +54,7 @@ class GoogleChatBot():
         self.snooze_url = self.config.get('snooze_url', '')
         self.message_limit = self.config.get('message_limit', 10)
         self.snooze_limit = self.config.get('snooze_limit', self.message_limit)
+        self.use_card = self.config.get('use_card', False)
         if self.snooze_url.endswith('/'):
             self.snooze_url = self.snooze_url[:-1]
         self.pubsub = PubSub(self, credentials)
@@ -77,7 +78,7 @@ class GoogleChatBot():
         self.pubsub.kill()
         LOG.info("Shutting down...")
 
-    def send_message(self, message, space=None, thread=None):
+    def send_message(self, message, space=None, thread=None, attachment=None):
         msg = {}
         msg['text'] = message
         if thread:
@@ -86,6 +87,8 @@ class GoogleChatBot():
             msg['thread']['name'] = thread
         LOG.debug('Posting on {} msg {}'.format(space, msg))
         chat = build('chat', 'v1', credentials=self.credentials)
+        if attachment:
+            msg['cards'] = [{'sections': [{'widgets': [{'buttons': [{'textButton': {'text': button.get('text'), 'onClick': {'action': {'actionMethodName': button.get('action')}}}} for button in attachment]}]}]}]
         for n in range(3):
             try:
                 resp = chat.spaces().messages().create(parent=space, body=msg).execute()
@@ -103,6 +106,7 @@ class GoogleChatBot():
         footer = ''
         website = ''
         return_value = {}
+        attachment = {}
         if self.snooze_url:
             website = self.snooze_url
         elif hasattr(req, 'forwarded_prefix') and req.forwarded_prefix:
@@ -120,12 +124,14 @@ class GoogleChatBot():
                 header = parse_emoji('::warning:: Received *{}* alerts on {} ::warning::\n\n'.format(len(content), timestamp))
                 if len(content) > self.message_limit:
                     footer = '\n...\n\nCheck all alerts in <{}/web|SnoozeWeb>'.format(website)
+            if self.use_card:
+                attachment = [{'text': 'Acknowledge', 'action': 'ack', 'style': 'success'}, {'text': 'Help', 'action': 'help', 'style': 'primary'}]
             if not multi and content[0]['threads']:
                 for thread in content[0]['threads']:
-                    self.send_message(content[0]['msg'], thread=thread)
+                    self.send_message(content[0]['msg'], thread=thread, attachment=attachment)
                 return_value = {content[0]['record_hash']: {'threads': content[0]['threads'], 'multithreads': content[0]['multithreads']}}
             else:
-                resp = self.send_message(header + '\n'.join([message['msg'] for message in content if len(message['msg']) > 0]) + footer, space=space)
+                resp = self.send_message(header + '\n'.join([message['msg'] for message in content if len(message['msg']) > 0]) + footer, space=space, attachment=attachment)
                 for message in content:
                     if multi:
                         message['multithreads'].append(resp['thread']['name'])
@@ -429,6 +435,11 @@ class PubSub(threading.Thread):
     def callback(self, message):
         data = json.loads(message.data)
         if data['type'] == 'MESSAGE':
+            return_msg = self.manager.process_user_message(data)
+            self.manager.send_message(return_msg, thread=data['message']['thread']['name'])
+        elif data['type'] == 'CARD_CLICKED':
+            data['message']['text'] = data['action']['actionMethodName']
+            data['message'].pop('argumentText', '')
             return_msg = self.manager.process_user_message(data)
             self.manager.send_message(return_msg, thread=data['message']['thread']['name'])
         message.ack()
