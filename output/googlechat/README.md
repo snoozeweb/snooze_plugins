@@ -48,4 +48,5 @@ General options:
 * `message_limit` (Integer, defaults to `10`): Maximum number of alerts to explicitly show in the same thread
 * `snooze_limit` (Integer, defaults to `message_limit` value): Maximum number of alerts that can be snoozed at the same time without using an explicit condition
 * `bot_name` (String, defaults to `'Bot'`): Google Bot name
+* `use_card` (Boolean, defaults to `false`): Add interactive buttons at the end of each message
 * `debug` (Boolean, defaults to `false`): Show debug logs
