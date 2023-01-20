@@ -120,7 +120,7 @@ def parse_rfc5424(msg):
             + r'(?P<process>\S+) ' \
             + r'(?P<pid>\S+) ' \
             + r'(?P<msgid>\S+) ' \
-            + r'(?P<structs>(?:\[.*?\])+ )?' \
+            + r'(?P<structs>(?:(?:\[.*?\])+|-) )?' \
             + r'(?P<message>.*)'
     match = re.match(regex, msg)
     if match:
