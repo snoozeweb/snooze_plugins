@@ -6,7 +6,7 @@ protobuf = "*"
 pyparsing = "*"
 python-dateutil = "*"
 pyyaml = "*"
-snooze-client = "*"
+snooze-client = ">=1.0.20"
 google-cloud-pubsub = "*"
 waitress = "*"
 
@@ -14,4 +14,4 @@ waitress = "*"
 pytest = "*"
 
 [requires]
-python_version = "3.6"
+python_version = "3.8"

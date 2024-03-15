@@ -27,6 +27,8 @@ from .bot_parser import parser as bot_parser
 from .bot_emoji import parse_emoji
 
 LOG = logging.getLogger("snooze.googlechat")
+logging.getLogger('google').setLevel(logging.WARNING)
+logging.getLogger('googleapiclient').setLevel(logging.WARNING)
 
 class GoogleChatBot():
 
@@ -85,13 +87,17 @@ class GoogleChatBot():
             space = '/'.join(thread.split('/')[:2])
             msg['thread'] = {}
             msg['thread']['name'] = thread
+            reply_option = 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD'
+        else:
+            reply_option = 'MESSAGE_REPLY_OPTION_UNSPECIFIED'
         LOG.debug('Posting on {} msg {}'.format(space, msg))
         chat = build('chat', 'v1', credentials=self.credentials)
         if attachment:
             msg['cards'] = [{'sections': [{'widgets': [{'buttons': [{'textButton': {'text': button.get('text'), 'onClick': {'action': {'actionMethodName': button.get('action')}}}} for button in attachment]}]}]}]
         for n in range(3):
             try:
-                resp = chat.spaces().messages().create(parent=space, body=msg).execute()
+                resp = chat.spaces().messages().create(parent=space, messageReplyOption=reply_option, body=msg).execute()
+                LOG.debug("Received response: %s", str(resp))
                 return resp
             except Exception as e:
                 LOG.exception(e)
