@@ -92,13 +92,14 @@ class SnoozeBotPlugin():
                 return_value = {content[0]['record_hash']: {'threads': content[0]['threads'], 'multithreads': content[0]['multithreads']}}
             else:
                 resp = self.send_message({'header': header, 'footer': footer, 'messages': content}, channel_id=channel, attachment=attachment, request=req)
-                for message in content:
-                    t = {'channel_id': channel, 'thread_id': resp.get('root_id', resp['id'])}
-                    if multi:
-                        message['multithreads'].append(t)
-                    else:
-                        message['threads'].append(t)
-                    return_value[message['record_hash']] = {'threads': message['threads'], 'multithreads': message['multithreads']}
+                if resp:
+                    for message in content:
+                        t = {'channel_id': channel, 'thread_id': resp.get('root_id', resp['id'])}
+                        if multi:
+                            message['multithreads'].append(t)
+                        else:
+                            message['threads'].append(t)
+                        return_value[message['record_hash']] = {'threads': message['threads'], 'multithreads': message['multithreads']}
         if multi:
             return return_value
         else:
@@ -133,7 +134,7 @@ class SnoozeBotPlugin():
                 notif_message = notification_from.get('message')
                 msg['from'] = notif_name
                 if notif_message:
-                    msg['from_msg'] = notif_message
+                    msg['notif_msg'] = notif_message
         for channel in rec_channels:
             if channel not in channels:
                 channels[channel] = []
@@ -395,7 +396,6 @@ class TeamsPlugin(SnoozeBotPlugin):
         return None
 
     def serve(self):
-        self.app_id = self.config.get('app_id')
         self.app = falcon.App()
         self.app.add_route('/alert', AlertRoute(self))
         wsgi_options = Adjustments(host=self.address, port=self.port)
@@ -417,10 +417,10 @@ class TeamsPlugin(SnoozeBotPlugin):
         if not 'messages' in message:
             simple_message = from_message + '<br>'
             if message.get('reply'):
-                simple_message += SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), message.get('reply'))
+                simple_message += SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format), message.get('reply'))
             else:
                 record = message['record']
-                timestamp = SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), record.get('timestamp', str(datetime.now().astimezone())))
+                timestamp = SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format), record.get('timestamp', str(datetime.now().astimezone())))
                 msg = parse_emoji("::warning:: <b>New escalation</b> on {} ::warning::".format(timestamp))
                 if len(record.get('message', '')) > 0:
                     msg += '<br>{}'.format(record.get('message'))
@@ -440,7 +440,7 @@ class TeamsPlugin(SnoozeBotPlugin):
                         "text": "$footer_msg",
                         "wrap": true
                     }""").substitute({'footer_msg': footer_msg})
-        timestamp = SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).strftime(self.date_format), message['messages'][0]['msg']['record'].get('timestamp', datetime.now().astimezone()))
+        timestamp = SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format), message['messages'][0]['msg']['record'].get('timestamp', datetime.now().astimezone()))
         if len(message['messages']) == 1:
             record = message['messages'][0]['msg']['record']
             facts_list = [('Host', '[{}]({}/web/?#/record?tab=All&s=hash%3D{})'.format(record.get('host', 'Unknown'), website, record.get('hash'))), ('Source', record.get('source', 'Unknown')), ('Process', record.get('process', 'Unknown')), ('Severity', record.get('severity', 'Unknown'))]
@@ -460,8 +460,8 @@ class TeamsPlugin(SnoozeBotPlugin):
                             from_msg += ': {}'.format(message['msg'].get('from_msg'))
                         msg['value'] += ' ({})'.format(from_msg)
                     messages.append(Template('{"title": "$key", "value": "$value"}').substitute(msg))
+#            facts = ','.join(json.dumps(messages))
             facts = ','.join(messages)
-        teamsappid = ''
         card = {
             'body': {
                 'contentType': 'html',
@@ -506,11 +506,11 @@ class TeamsPlugin(SnoozeBotPlugin):
                         }$footer]
                 }''').substitute({'schema': '$schema', 'header': header, 'footer': footer, 'timestamp': timestamp, 'facts': facts, 'from': from_message}),
                 'name': "Testing name",
-                'thumbnailUrl': None
+                'thumbnailUrl': None,
+                'teamsAppId': '5ef9989f-aeae-45d5-a672-10615a4819c9'
             }]
         }
-        if self.app_id:
-            card['attachments'][0]['teamsAppId'] = self.app_id
+        LOG.info(card)
         return card
 
 class TeamsBot():
