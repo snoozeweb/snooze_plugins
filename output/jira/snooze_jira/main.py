@@ -77,11 +77,10 @@ class JiraPlugin:
             'info': 'Lowest',
         })
 
-        # Custom JIRA fields: assignee, reporter, area
+        # Custom JIRA fields
         self.default_assignee = self.config.get('assignee', '')
         self.default_reporter = self.config.get('reporter', '')
-        self.default_area = self.config.get('area', '')
-        self.area_field = self.config.get('area_field', 'customfield_10100')
+        self.custom_fields = self.config.get('custom_fields', {})
 
         # Reopen configuration: optionally reopen closed tickets on re-escalation
         self.reopen_closed = self.config.get('reopen_closed', False)
@@ -146,10 +145,13 @@ class JiraPlugin:
                     severity = record.get('severity', '').lower()
                     priority = self.priority_mapping.get(severity, self.default_priority)
 
-                # Resolve assignee, reporter, area (payload override > config default)
+                # Resolve assignee, reporter (payload override > config default)
                 assignee = req_media.get('assignee', self.default_assignee)
                 reporter = req_media.get('reporter', self.default_reporter)
-                area = req_media.get('area', self.default_area)
+
+                # Merge custom fields: config defaults, then payload overrides
+                merged_custom_fields = dict(self.custom_fields)
+                merged_custom_fields.update(req_media.get('custom_fields', {}))
 
                 if not project_key:
                     LOG.error("No project_key specified for record %s, skipping", record_hash)
@@ -180,14 +182,13 @@ class JiraPlugin:
                         'content': [{'type': 'text', 'text': notif_text}],
                     })
 
-                # Build extra fields with assignee, reporter, area
+                # Build extra fields with assignee, reporter, and custom fields
                 combined_extra = dict(extra_fields)
                 if assignee:
-                    combined_extra['assignee'] = {'id': assignee}
+                    combined_extra['assignee'] = self._resolve_user_field(assignee)
                 if reporter:
-                    combined_extra['reporter'] = {'id': reporter}
-                if area:
-                    combined_extra[self.area_field] = {'value': area}
+                    combined_extra['reporter'] = self._resolve_user_field(reporter)
+                combined_extra.update(merged_custom_fields)
 
                 try:
                     result = self.jira.create_issue(
@@ -266,6 +267,23 @@ class JiraPlugin:
                     LOG.warning("Could not find a suitable transition to reopen %s", issue_key)
         except Exception as e:
             LOG.exception("Failed to reopen issue %s: %s", issue_key, e)
+
+    @staticmethod
+    def _resolve_user_field(value):
+        """Resolve a user identifier to a JIRA user field dict.
+
+        If the value contains '@', it is treated as an email address.
+        Otherwise, it is treated as a JIRA account ID.
+
+        Args:
+            value: An email address or JIRA account ID string
+
+        Returns:
+            dict suitable for JIRA assignee/reporter fields
+        """
+        if '@' in value:
+            return {'emailAddress': value}
+        return {'id': value}
 
     def _format_summary(self, record):
         """Format the JIRA issue summary from the alert record using the configured template.

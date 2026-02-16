@@ -44,7 +44,7 @@ Configuration hints:
   ```
   * Replace `OPS` with your JIRA project key
   * You can optionally add `"message": "Custom message"` to include extra context
-  * You can override per-alert: `"issue_type": "Bug"`, `"priority": "High"`, `"labels": ["critical", "snooze"]`, `"assignee": "<account_id>"`, `"reporter": "<account_id>"`, `"area": "Networking"`
+  * You can override per-alert: `"issue_type": "Bug"`, `"priority": "High"`, `"labels": ["critical", "snooze"]`, `"assignee": "<account_id_or_email>"`, `"reporter": "<account_id_or_email>"`, `"custom_fields": {"customfield_10100": {"value": "Networking"}}`
 * Check `Inject Response`
 * Check `Batch` if you want multiple alerts to create separate tickets
 
@@ -82,10 +82,9 @@ This plugin's configuration is in the following YAML file: `/etc/snooze/jira.yam
 | `labels` | List | `["snooze"]` | Default labels to add to created tickets |
 | `summary_template` | String | `[${severity}] ${host} - ${message}` | Template for issue summary. Available variables: `${severity}`, `${host}`, `${source}`, `${process}`, `${message}`, `${timestamp}` |
 | `extra_fields` | Dict | `{}` | Additional JIRA fields to set on issue creation (e.g. `{"components": [{"name": "Infrastructure"}]}`) |
-| `assignee` | String | | JIRA account ID of the default assignee (e.g. `5b109f2e9729b51b54dc274d`). Can be overridden per-alert in payload |
-| `reporter` | String | | JIRA account ID of the default reporter. Can be overridden per-alert in payload |
-| `area` | String | | Default value for the JIRA "area" custom field. Can be overridden per-alert in payload |
-| `area_field` | String | `customfield_10100` | JIRA custom field ID for the "area" field. Check your JIRA instance for the correct field ID |
+| `assignee` | String | | Default assignee — JIRA account ID (e.g. `5b109f2e9729b51b54dc274d`) or email address (e.g. `user@example.com`). Can be overridden per-alert in payload |
+| `reporter` | String | | Default reporter — JIRA account ID or email address. Can be overridden per-alert in payload |
+| `custom_fields` | Dict | `{}` | Arbitrary JIRA custom fields to set on issue creation. Values are passed through as-is to the JIRA API. See examples below |
 | `reopen_closed` | Boolean | `false` | When true, re-escalation on a closed/done JIRA ticket will reopen it |
 | `reopen_status_name` | String | `To Do` | Target status name when reopening a closed ticket (e.g. `To Do`, `Open`, `Backlog`) |
 | `ssl_verify` | Boolean | `true` | Use SSL verification for JIRA API requests |
@@ -114,10 +113,14 @@ labels:
   - snooze
   - monitoring
 summary_template: "[${severity}] ${host} - ${message}"
-assignee: "5b109f2e9729b51b54dc274d"    # JIRA account ID
-reporter: "5b10a2844c20165700ede21g"    # JIRA account ID
-area: "Infrastructure"
-area_field: "customfield_10100"
+assignee: "5b109f2e9729b51b54dc274d"    # JIRA account ID or email
+reporter: "bot@mycompany.com"              # email-based reporter
+custom_fields:
+  customfield_10100:
+    value: "Infrastructure"
+  customfield_10718:
+    - id: "11688"
+      value: "DevOps 🟣"
 reopen_closed: true
 reopen_status_name: "To Do"
 ssl_verify: true
@@ -163,3 +166,57 @@ This plugin uses [Basic authentication](https://developer.atlassian.com/cloud/ji
 2. Click **Create API token**
 3. Give it a descriptive label (e.g. "Snooze Bot")
 4. Copy the token and add it to your `jira.yaml` configuration
+
+## Custom Fields
+
+The `custom_fields` configuration supports arbitrary JIRA custom fields. Values are passed through directly to the JIRA REST API, so any structure supported by JIRA can be used.
+
+**Simple select field:**
+```yaml
+custom_fields:
+  customfield_10100:
+    value: "Infrastructure"
+```
+
+**Array of objects (e.g. multi-select or cascading field):**
+```yaml
+custom_fields:
+  customfield_10718:
+    - id: "11688"
+      value: "DevOps 🟣"
+    - id: "11689"
+      value: "SRE 🔵"
+```
+
+**Multiple custom fields:**
+```yaml
+custom_fields:
+  customfield_10100:
+    value: "Infrastructure"
+  customfield_10200: "plain string value"
+  customfield_10718:
+    - id: "11688"
+      value: "DevOps 🟣"
+```
+
+Custom fields can also be overridden per-alert in the webhook payload:
+```json
+{
+  "project_key": "OPS",
+  "custom_fields": {
+    "customfield_10100": {"value": "Networking"}
+  },
+  "alert": {{ __self__ | tojson() }}
+}
+```
+
+Payload custom fields are merged on top of config defaults (payload wins for same field ID).
+
+## Assignee and Reporter
+
+The `assignee` and `reporter` fields support both JIRA account IDs and email addresses. The plugin auto-detects the format:
+
+- **Account ID** (no `@`): `assignee: "5b109f2e9729b51b54dc274d"` → `{"id": "5b109f2e9729b51b54dc274d"}`
+- **Email address** (contains `@`): `assignee: "john@example.com"` → `{"emailAddress": "john@example.com"}`
+
+Both can be overridden per-alert in the webhook payload.

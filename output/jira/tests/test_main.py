@@ -562,6 +562,20 @@ class TestJiraPlugin:
         assert call_kwargs['extra_fields']['assignee'] == {'id': '5b109f2e9729b51b54dc274d'}
 
     @patch.object(JiraClient, 'create_issue')
+    def test_assignee_email_from_config(self, mock_create):
+        plugin = self._make_plugin({'assignee': 'john@example.com'})
+        mock_create.return_value = {'id': '10010', 'key': 'OPS-60'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'assign_email1', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['extra_fields']['assignee'] == {'emailAddress': 'john@example.com'}
+
+    @patch.object(JiraClient, 'create_issue')
     def test_reporter_from_config(self, mock_create):
         plugin = self._make_plugin({'reporter': '5b10a2844c20165700ede21g'})
         mock_create.return_value = {'id': '10011', 'key': 'OPS-61'}
@@ -576,18 +590,59 @@ class TestJiraPlugin:
         assert call_kwargs['extra_fields']['reporter'] == {'id': '5b10a2844c20165700ede21g'}
 
     @patch.object(JiraClient, 'create_issue')
-    def test_area_from_config(self, mock_create):
-        plugin = self._make_plugin({'area': 'Infrastructure', 'area_field': 'customfield_10100'})
+    def test_reporter_email_from_config(self, mock_create):
+        plugin = self._make_plugin({'reporter': 'jane@example.com'})
+        mock_create.return_value = {'id': '10011', 'key': 'OPS-61'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'report_email1', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['extra_fields']['reporter'] == {'emailAddress': 'jane@example.com'}
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_custom_fields_from_config(self, mock_create):
+        custom = {
+            'customfield_10100': {'value': 'Infrastructure'},
+            'customfield_10718': [{'id': '11688', 'value': 'DevOps'}],
+        }
+        plugin = self._make_plugin({'custom_fields': custom})
         mock_create.return_value = {'id': '10012', 'key': 'OPS-62'}
 
         req = MagicMock()
         req.params = {'snooze_action_name': 'jira_action'}
 
-        medias = [{'alert': {'hash': 'area1', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
+        medias = [{'alert': {'hash': 'cf1', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
 
         plugin.process_records(req, medias)
         call_kwargs = mock_create.call_args[1]
         assert call_kwargs['extra_fields']['customfield_10100'] == {'value': 'Infrastructure'}
+        assert call_kwargs['extra_fields']['customfield_10718'] == [{'id': '11688', 'value': 'DevOps'}]
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_custom_fields_payload_override(self, mock_create):
+        config_custom = {'customfield_10100': {'value': 'Infrastructure'}}
+        payload_custom = {'customfield_10100': {'value': 'Networking'}, 'customfield_10200': {'value': 'Team A'}}
+        plugin = self._make_plugin({'custom_fields': config_custom})
+        mock_create.return_value = {'id': '10013', 'key': 'OPS-63'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'custom_fields': payload_custom,
+            'alert': {'hash': 'cf2', 'host': 'web01', 'severity': 'critical', 'message': 'Down'},
+        }]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        # Payload should override config for same field
+        assert call_kwargs['extra_fields']['customfield_10100'] == {'value': 'Networking'}
+        # Payload-only field should be present
+        assert call_kwargs['extra_fields']['customfield_10200'] == {'value': 'Team A'}
 
     @patch.object(JiraClient, 'create_issue')
     def test_assignee_payload_override(self, mock_create):
@@ -607,6 +662,23 @@ class TestJiraPlugin:
         assert call_kwargs['extra_fields']['assignee'] == {'id': 'payload_user'}
 
     @patch.object(JiraClient, 'create_issue')
+    def test_assignee_payload_override_email(self, mock_create):
+        plugin = self._make_plugin({'assignee': 'config_id'})
+        mock_create.return_value = {'id': '10013', 'key': 'OPS-63'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'assignee': 'override@example.com',
+            'alert': {'hash': 'assign3', 'host': 'web01', 'severity': 'critical', 'message': 'Down'},
+        }]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['extra_fields']['assignee'] == {'emailAddress': 'override@example.com'}
+
+    @patch.object(JiraClient, 'create_issue')
     def test_no_assignee_when_empty(self, mock_create):
         plugin = self._make_plugin()
         mock_create.return_value = {'id': '10014', 'key': 'OPS-64'}
@@ -619,3 +691,18 @@ class TestJiraPlugin:
         plugin.process_records(req, medias)
         call_kwargs = mock_create.call_args[1]
         assert 'assignee' not in call_kwargs['extra_fields']
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_no_custom_fields_when_empty(self, mock_create):
+        plugin = self._make_plugin()
+        mock_create.return_value = {'id': '10015', 'key': 'OPS-65'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'nocf', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        # No custom fields, no assignee, no reporter => extra_fields should be empty
+        assert call_kwargs['extra_fields'] == {}
