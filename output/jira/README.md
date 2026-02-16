@@ -44,7 +44,7 @@ Configuration hints:
   ```
   * Replace `OPS` with your JIRA project key
   * You can optionally add `"message": "Custom message"` to include extra context
-  * You can override per-alert: `"issue_type": "Bug"`, `"priority": "High"`, `"labels": ["critical", "snooze"]`, `"assignee": "<account_id_or_email>"`, `"reporter": "<account_id_or_email>"`, `"custom_fields": {"customfield_10100": {"value": "Networking"}}`
+  * You can override per-alert: `"issue_type": "Bug"`, `"priority": "High"`, `"labels": ["critical", "snooze"]`, `"assignee": "<account_id_or_email>"`, `"reporter": "<account_id_or_email>"`, `"initial_status": "In Progress"`, `"custom_fields": {"customfield_10100": {"value": "Networking"}}`
 * Check `Inject Response`
 * Check `Batch` if you want multiple alerts to create separate tickets
 
@@ -87,6 +87,7 @@ This plugin's configuration is in the following YAML file: `/etc/snooze/jira.yam
 | `custom_fields` | Dict | `{}` | Arbitrary JIRA custom fields to set on issue creation. Values are passed through as-is to the JIRA API. See examples below |
 | `reopen_closed` | Boolean | `false` | When true, re-escalation on a closed/done JIRA ticket will reopen it |
 | `reopen_status_name` | String | `To Do` | Target status name when reopening a closed ticket (e.g. `To Do`, `Open`, `Backlog`) |
+| `initial_status` | String | | If set, newly created issues are transitioned to this status after creation (e.g. `In Progress`, `Open`). Can be overridden per-alert in payload |
 | `ssl_verify` | Boolean | `true` | Use SSL verification for JIRA API requests |
 | `listening_address` | String | `0.0.0.0` | Address to listen to |
 | `listening_port` | Integer | `5203` | Port to listen to |
@@ -123,6 +124,7 @@ custom_fields:
       value: "DevOps 🟣"
 reopen_closed: true
 reopen_status_name: "To Do"
+initial_status: "In Progress"
 ssl_verify: true
 listening_address: 0.0.0.0
 listening_port: 5203
@@ -222,3 +224,22 @@ The `assignee` and `reporter` fields support both JIRA account IDs and email add
 If an email cannot be resolved to a JIRA user, the field is skipped and a warning is logged.
 
 Both can be overridden per-alert in the webhook payload.
+
+## Initial Status
+
+By default, newly created JIRA issues start in the workflow's default status (typically "To Do" or "Open"). If you set `initial_status`, the plugin will automatically transition the issue to the specified status right after creation.
+
+```yaml
+initial_status: "In Progress"
+```
+
+The plugin looks up available transitions on the newly created issue, finds the one whose destination status name matches (case-insensitive), and applies it. If no matching transition is found, it falls back to any transition that doesn't lead to a "done" category.
+
+This can also be overridden per-alert in the webhook payload:
+```json
+{
+  "project_key": "OPS",
+  "initial_status": "In Review",
+  "alert": {{ __self__ | tojson() }}
+}
+```

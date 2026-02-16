@@ -86,6 +86,9 @@ class JiraPlugin:
         self.reopen_closed = self.config.get('reopen_closed', False)
         self.reopen_status_name = self.config.get('reopen_status_name', 'To Do')
 
+        # Initial status: optionally transition newly created issues to a specific status
+        self.initial_status = self.config.get('initial_status', '')
+
     def process_alert(self, request, medias):
         """Entry point for processing alert webhooks."""
         if not isinstance(medias, list):
@@ -206,6 +209,12 @@ class JiraPlugin:
                     )
                     issue_key = result.get('key', '')
                     LOG.info("Created JIRA issue %s for record %s", issue_key, record_hash)
+
+                    # Transition to initial status if configured
+                    initial_status = req_media.get('initial_status', self.initial_status)
+                    if issue_key and initial_status:
+                        self._transition_to_status(issue_key, initial_status)
+
                     return_value[record_hash] = {'issue_key': issue_key}
                 except Exception as e:
                     LOG.exception("Failed to create JIRA issue for record %s: %s", record_hash, e)
@@ -249,28 +258,52 @@ class JiraPlugin:
             issue = self.jira.get_issue(issue_key)
             status_category = issue.get('fields', {}).get('status', {}).get('statusCategory', {}).get('key', '')
             if status_category == 'done':
-                transitions = self.jira.get_transitions(issue_key)
-                reopen_transition = None
-                for t in transitions:
-                    to_name = t.get('to', {}).get('name', '')
-                    if to_name.lower() == self.reopen_status_name.lower():
-                        reopen_transition = t
-                        break
-                if not reopen_transition:
-                    # Fallback: pick the first transition that is not to a 'done' category
-                    for t in transitions:
-                        to_category = t.get('to', {}).get('statusCategory', {}).get('key', '')
-                        if to_category != 'done':
-                            reopen_transition = t
-                            break
-                if reopen_transition:
-                    self.jira.transition_issue(issue_key, reopen_transition['id'],
-                                               comment='Reopened by Snooze due to re-escalation')
-                    LOG.info("Reopened issue %s via transition '%s'", issue_key, reopen_transition.get('name'))
-                else:
-                    LOG.warning("Could not find a suitable transition to reopen %s", issue_key)
+                self._transition_to_status(
+                    issue_key, self.reopen_status_name,
+                    comment='Reopened by Snooze due to re-escalation',
+                )
         except Exception as e:
             LOG.exception("Failed to reopen issue %s: %s", issue_key, e)
+
+    def _transition_to_status(self, issue_key, target_status_name, comment=None):
+        """Transition a JIRA issue to a target status by name.
+
+        Looks up available transitions and finds one whose destination status
+        matches the target name (case-insensitive). Falls back to any non-done
+        transition if no exact match is found.
+
+        Args:
+            issue_key: The JIRA issue key (e.g. 'OPS-42')
+            target_status_name: Desired target status name (e.g. 'In Progress', 'To Do')
+            comment: Optional comment to include with the transition
+        """
+        try:
+            transitions = self.jira.get_transitions(issue_key)
+            transition = None
+
+            # Try exact match on target status name
+            for t in transitions:
+                to_name = t.get('to', {}).get('name', '')
+                if to_name.lower() == target_status_name.lower():
+                    transition = t
+                    break
+
+            # Fallback: pick the first transition that is not to a 'done' category
+            if not transition:
+                for t in transitions:
+                    to_category = t.get('to', {}).get('statusCategory', {}).get('key', '')
+                    if to_category != 'done':
+                        transition = t
+                        break
+
+            if transition:
+                self.jira.transition_issue(issue_key, transition['id'], comment=comment)
+                LOG.info("Transitioned issue %s to '%s' via transition '%s'",
+                         issue_key, target_status_name, transition.get('name'))
+            else:
+                LOG.warning("Could not find a transition to '%s' for %s", target_status_name, issue_key)
+        except Exception as e:
+            LOG.exception("Failed to transition issue %s to '%s': %s", issue_key, target_status_name, e)
 
     def _resolve_user_field(self, value):
         """Resolve a user identifier to a JIRA user field dict.

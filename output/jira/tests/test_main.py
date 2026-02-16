@@ -782,3 +782,62 @@ class TestJiraPlugin:
         # Should only call find_user_by_email once due to caching
         mock_find.assert_called_once_with('cached@example.com')
         assert mock_create.call_count == 2
+
+    @patch.object(JiraClient, 'transition_issue')
+    @patch.object(JiraClient, 'get_transitions')
+    @patch.object(JiraClient, 'create_issue')
+    def test_initial_status_transitions_after_create(self, mock_create, mock_get_trans, mock_transition):
+        plugin = self._make_plugin({'initial_status': 'In Progress'})
+        mock_create.return_value = {'id': '10020', 'key': 'OPS-70'}
+        mock_get_trans.return_value = [
+            {'id': '21', 'name': 'Start Progress', 'to': {'name': 'In Progress', 'statusCategory': {'key': 'indeterminate'}}},
+        ]
+        mock_transition.return_value = {}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'init1', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
+
+        plugin.process_records(req, medias)
+        mock_create.assert_called_once()
+        mock_get_trans.assert_called_once_with('OPS-70')
+        mock_transition.assert_called_once_with('OPS-70', '21', comment=None)
+
+    @patch.object(JiraClient, 'transition_issue')
+    @patch.object(JiraClient, 'get_transitions')
+    @patch.object(JiraClient, 'create_issue')
+    def test_initial_status_payload_override(self, mock_create, mock_get_trans, mock_transition):
+        plugin = self._make_plugin({'initial_status': 'In Progress'})
+        mock_create.return_value = {'id': '10021', 'key': 'OPS-71'}
+        mock_get_trans.return_value = [
+            {'id': '31', 'name': 'Review', 'to': {'name': 'In Review', 'statusCategory': {'key': 'indeterminate'}}},
+        ]
+        mock_transition.return_value = {}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'initial_status': 'In Review',
+            'alert': {'hash': 'init2', 'host': 'web01', 'severity': 'critical', 'message': 'Down'},
+        }]
+
+        plugin.process_records(req, medias)
+        mock_get_trans.assert_called_once_with('OPS-71')
+        mock_transition.assert_called_once_with('OPS-71', '31', comment=None)
+
+    @patch.object(JiraClient, 'get_transitions')
+    @patch.object(JiraClient, 'create_issue')
+    def test_no_initial_status_when_not_configured(self, mock_create, mock_get_trans):
+        plugin = self._make_plugin()
+        mock_create.return_value = {'id': '10022', 'key': 'OPS-72'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'init3', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
+
+        plugin.process_records(req, medias)
+        mock_create.assert_called_once()
+        mock_get_trans.assert_not_called()
