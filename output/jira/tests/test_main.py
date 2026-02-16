@@ -546,3 +546,76 @@ class TestJiraPlugin:
         plugin.process_records(req, medias)
         # Should fall back to 'In Progress' transition
         mock_transition.assert_called_once_with('OPS-99', '21', comment='Reopened by Snooze due to re-escalation')
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_assignee_from_config(self, mock_create):
+        plugin = self._make_plugin({'assignee': '5b109f2e9729b51b54dc274d'})
+        mock_create.return_value = {'id': '10010', 'key': 'OPS-60'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'assign1', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['extra_fields']['assignee'] == {'id': '5b109f2e9729b51b54dc274d'}
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_reporter_from_config(self, mock_create):
+        plugin = self._make_plugin({'reporter': '5b10a2844c20165700ede21g'})
+        mock_create.return_value = {'id': '10011', 'key': 'OPS-61'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'report1', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['extra_fields']['reporter'] == {'id': '5b10a2844c20165700ede21g'}
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_area_from_config(self, mock_create):
+        plugin = self._make_plugin({'area': 'Infrastructure', 'area_field': 'customfield_10100'})
+        mock_create.return_value = {'id': '10012', 'key': 'OPS-62'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'area1', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['extra_fields']['customfield_10100'] == {'value': 'Infrastructure'}
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_assignee_payload_override(self, mock_create):
+        plugin = self._make_plugin({'assignee': 'config_user'})
+        mock_create.return_value = {'id': '10013', 'key': 'OPS-63'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'assignee': 'payload_user',
+            'alert': {'hash': 'assign2', 'host': 'web01', 'severity': 'critical', 'message': 'Down'},
+        }]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['extra_fields']['assignee'] == {'id': 'payload_user'}
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_no_assignee_when_empty(self, mock_create):
+        plugin = self._make_plugin()
+        mock_create.return_value = {'id': '10014', 'key': 'OPS-64'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'noassign', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert 'assignee' not in call_kwargs['extra_fields']

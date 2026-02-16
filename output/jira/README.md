@@ -44,7 +44,7 @@ Configuration hints:
   ```
   * Replace `OPS` with your JIRA project key
   * You can optionally add `"message": "Custom message"` to include extra context
-  * You can override per-alert: `"issue_type": "Bug"`, `"priority": "High"`, `"labels": ["critical", "snooze"]`
+  * You can override per-alert: `"issue_type": "Bug"`, `"priority": "High"`, `"labels": ["critical", "snooze"]`, `"assignee": "<account_id>"`, `"reporter": "<account_id>"`, `"area": "Networking"`
 * Check `Inject Response`
 * Check `Batch` if you want multiple alerts to create separate tickets
 
@@ -82,6 +82,10 @@ This plugin's configuration is in the following YAML file: `/etc/snooze/jira.yam
 | `labels` | List | `["snooze"]` | Default labels to add to created tickets |
 | `summary_template` | String | `[${severity}] ${host} - ${message}` | Template for issue summary. Available variables: `${severity}`, `${host}`, `${source}`, `${process}`, `${message}`, `${timestamp}` |
 | `extra_fields` | Dict | `{}` | Additional JIRA fields to set on issue creation (e.g. `{"components": [{"name": "Infrastructure"}]}`) |
+| `assignee` | String | | JIRA account ID of the default assignee (e.g. `5b109f2e9729b51b54dc274d`). Can be overridden per-alert in payload |
+| `reporter` | String | | JIRA account ID of the default reporter. Can be overridden per-alert in payload |
+| `area` | String | | Default value for the JIRA "area" custom field. Can be overridden per-alert in payload |
+| `area_field` | String | `customfield_10100` | JIRA custom field ID for the "area" field. Check your JIRA instance for the correct field ID |
 | `reopen_closed` | Boolean | `false` | When true, re-escalation on a closed/done JIRA ticket will reopen it |
 | `reopen_status_name` | String | `To Do` | Target status name when reopening a closed ticket (e.g. `To Do`, `Open`, `Backlog`) |
 | `ssl_verify` | Boolean | `true` | Use SSL verification for JIRA API requests |
@@ -110,6 +114,10 @@ labels:
   - snooze
   - monitoring
 summary_template: "[${severity}] ${host} - ${message}"
+assignee: "5b109f2e9729b51b54dc274d"    # JIRA account ID
+reporter: "5b10a2844c20165700ede21g"    # JIRA account ID
+area: "Infrastructure"
+area_field: "customfield_10100"
 reopen_closed: true
 reopen_status_name: "To Do"
 ssl_verify: true

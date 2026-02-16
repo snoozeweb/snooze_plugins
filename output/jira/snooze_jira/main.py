@@ -77,6 +77,12 @@ class JiraPlugin:
             'info': 'Lowest',
         })
 
+        # Custom JIRA fields: assignee, reporter, area
+        self.default_assignee = self.config.get('assignee', '')
+        self.default_reporter = self.config.get('reporter', '')
+        self.default_area = self.config.get('area', '')
+        self.area_field = self.config.get('area_field', 'customfield_10100')
+
         # Reopen configuration: optionally reopen closed tickets on re-escalation
         self.reopen_closed = self.config.get('reopen_closed', False)
         self.reopen_status_name = self.config.get('reopen_status_name', 'To Do')
@@ -140,6 +146,11 @@ class JiraPlugin:
                     severity = record.get('severity', '').lower()
                     priority = self.priority_mapping.get(severity, self.default_priority)
 
+                # Resolve assignee, reporter, area (payload override > config default)
+                assignee = req_media.get('assignee', self.default_assignee)
+                reporter = req_media.get('reporter', self.default_reporter)
+                area = req_media.get('area', self.default_area)
+
                 if not project_key:
                     LOG.error("No project_key specified for record %s, skipping", record_hash)
                     continue
@@ -169,6 +180,15 @@ class JiraPlugin:
                         'content': [{'type': 'text', 'text': notif_text}],
                     })
 
+                # Build extra fields with assignee, reporter, area
+                combined_extra = dict(extra_fields)
+                if assignee:
+                    combined_extra['assignee'] = {'id': assignee}
+                if reporter:
+                    combined_extra['reporter'] = {'id': reporter}
+                if area:
+                    combined_extra[self.area_field] = {'value': area}
+
                 try:
                     result = self.jira.create_issue(
                         project_key=project_key,
@@ -177,7 +197,7 @@ class JiraPlugin:
                         description_adf=description_adf,
                         priority=priority,
                         labels=labels,
-                        extra_fields=extra_fields,
+                        extra_fields=combined_extra,
                     )
                     issue_key = result.get('key', '')
                     LOG.info("Created JIRA issue %s for record %s", issue_key, record_hash)
