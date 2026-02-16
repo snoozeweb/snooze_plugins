@@ -160,6 +160,19 @@ class TestJiraClient:
         assert result['key'] == 'OPS-42'
         mock_request.assert_called_once_with('GET', '/issue/OPS-42')
 
+    @patch.object(JiraClient, '_request')
+    def test_get_transitions(self, mock_request):
+        mock_request.return_value = {
+            'transitions': [
+                {'id': '11', 'name': 'To Do', 'to': {'name': 'To Do'}},
+                {'id': '21', 'name': 'In Progress', 'to': {'name': 'In Progress'}},
+            ]
+        }
+        result = self.client.get_transitions('OPS-42')
+        assert len(result) == 2
+        assert result[0]['id'] == '11'
+        mock_request.assert_called_once_with('GET', '/issue/OPS-42/transitions')
+
 
 class TestJiraPlugin:
     """Tests for the main JiraPlugin logic."""
@@ -340,3 +353,196 @@ class TestJiraPlugin:
         assert call_kwargs['project_key'] == 'INFRA'
         assert call_kwargs['issue_type'] == 'Bug'
         assert call_kwargs['priority'] == 'High'
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_priority_mapping_critical(self, mock_create):
+        plugin = self._make_plugin()
+        mock_create.return_value = {'id': '10003', 'key': 'OPS-50'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'alert': {
+                'hash': 'prio1',
+                'host': 'web01',
+                'severity': 'critical',
+                'message': 'Down',
+            },
+        }]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['priority'] == 'Highest'
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_priority_mapping_info(self, mock_create):
+        plugin = self._make_plugin()
+        mock_create.return_value = {'id': '10004', 'key': 'OPS-51'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'alert': {
+                'hash': 'prio2',
+                'host': 'web01',
+                'severity': 'info',
+                'message': 'Informational',
+            },
+        }]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['priority'] == 'Lowest'
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_priority_mapping_unknown_severity_uses_default(self, mock_create):
+        plugin = self._make_plugin()
+        mock_create.return_value = {'id': '10005', 'key': 'OPS-52'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'alert': {
+                'hash': 'prio3',
+                'host': 'web01',
+                'severity': 'unknown_level',
+                'message': 'Something',
+            },
+        }]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['priority'] == 'Medium'  # default_priority
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_priority_payload_override_beats_mapping(self, mock_create):
+        plugin = self._make_plugin()
+        mock_create.return_value = {'id': '10006', 'key': 'OPS-53'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'priority': 'Low',
+            'alert': {
+                'hash': 'prio4',
+                'host': 'web01',
+                'severity': 'critical',
+                'message': 'Override',
+            },
+        }]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['priority'] == 'Low'  # payload override, not 'Highest'
+
+    @patch.object(JiraClient, 'transition_issue')
+    @patch.object(JiraClient, 'get_transitions')
+    @patch.object(JiraClient, 'get_issue')
+    @patch.object(JiraClient, 'add_comment')
+    def test_reopen_closed_issue(self, mock_comment, mock_get_issue, mock_get_trans, mock_transition):
+        plugin = self._make_plugin({'reopen_closed': True, 'reopen_status_name': 'To Do'})
+        mock_comment.return_value = {'id': '200'}
+        mock_get_issue.return_value = {
+            'fields': {
+                'status': {
+                    'name': 'Done',
+                    'statusCategory': {'key': 'done'},
+                },
+            },
+        }
+        mock_get_trans.return_value = [
+            {'id': '11', 'name': 'Reopen', 'to': {'name': 'To Do', 'statusCategory': {'key': 'new'}}},
+        ]
+        mock_transition.return_value = {}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'alert': {
+                'hash': 'reopen1',
+                'host': 'web01',
+                'severity': 'critical',
+                'message': 'Back again',
+                'snooze_webhook_responses': [{
+                    'action_name': 'jira_action',
+                    'content': {'issue_key': 'OPS-42'},
+                }],
+            },
+        }]
+
+        result = plugin.process_records(req, medias)
+        mock_comment.assert_called_once()
+        mock_get_issue.assert_called_once_with('OPS-42')
+        mock_transition.assert_called_once_with('OPS-42', '11', comment='Reopened by Snooze due to re-escalation')
+
+    @patch.object(JiraClient, 'get_issue')
+    @patch.object(JiraClient, 'add_comment')
+    def test_no_reopen_when_disabled(self, mock_comment, mock_get_issue):
+        plugin = self._make_plugin({'reopen_closed': False})
+        mock_comment.return_value = {'id': '200'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'alert': {
+                'hash': 'reopen2',
+                'host': 'web01',
+                'severity': 'critical',
+                'message': 'Still down',
+                'snooze_webhook_responses': [{
+                    'action_name': 'jira_action',
+                    'content': {'issue_key': 'OPS-42'},
+                }],
+            },
+        }]
+
+        plugin.process_records(req, medias)
+        mock_comment.assert_called_once()
+        mock_get_issue.assert_not_called()  # Should not even check issue status
+
+    @patch.object(JiraClient, 'transition_issue')
+    @patch.object(JiraClient, 'get_transitions')
+    @patch.object(JiraClient, 'get_issue')
+    @patch.object(JiraClient, 'add_comment')
+    def test_reopen_fallback_transition(self, mock_comment, mock_get_issue, mock_get_trans, mock_transition):
+        """When the configured reopen_status_name doesn't match, fall back to any non-done transition."""
+        plugin = self._make_plugin({'reopen_closed': True, 'reopen_status_name': 'Open'})
+        mock_comment.return_value = {'id': '200'}
+        mock_get_issue.return_value = {
+            'fields': {
+                'status': {
+                    'name': 'Done',
+                    'statusCategory': {'key': 'done'},
+                },
+            },
+        }
+        mock_get_trans.return_value = [
+            {'id': '21', 'name': 'In Progress', 'to': {'name': 'In Progress', 'statusCategory': {'key': 'indeterminate'}}},
+        ]
+        mock_transition.return_value = {}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'alert': {
+                'hash': 'reopen3',
+                'host': 'web01',
+                'severity': 'warning',
+                'message': 'Back',
+                'snooze_webhook_responses': [{
+                    'action_name': 'jira_action',
+                    'content': {'issue_key': 'OPS-99'},
+                }],
+            },
+        }]
+
+        plugin.process_records(req, medias)
+        # Should fall back to 'In Progress' transition
+        mock_transition.assert_called_once_with('OPS-99', '21', comment='Reopened by Snooze due to re-escalation')

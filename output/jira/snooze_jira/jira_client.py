@@ -123,6 +123,18 @@ class JiraClient:
         """
         return self._request('GET', f'/issue/{issue_key}')
 
+    def get_transitions(self, issue_key):
+        """Get available transitions for an issue.
+
+        Args:
+            issue_key: The issue key (e.g. 'OPS-123')
+
+        Returns:
+            list of transition dicts with 'id', 'name', 'to' fields
+        """
+        result = self._request('GET', f'/issue/{issue_key}/transitions')
+        return result.get('transitions', [])
+
     @staticmethod
     def _text_to_adf(text):
         """Convert plain text to Atlassian Document Format (ADF).

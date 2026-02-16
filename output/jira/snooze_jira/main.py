@@ -1,4 +1,3 @@
-import json
 import yaml
 import os
 import logging
@@ -69,6 +68,19 @@ class JiraPlugin:
         self.summary_template = self.config.get('summary_template', '[${severity}] ${host} - ${message}')
         self.extra_fields = self.config.get('extra_fields', {})
 
+        # Priority mapping: maps Snooze severity to JIRA priority name
+        self.priority_mapping = self.config.get('priority_mapping', {
+            'critical': 'Highest',
+            'major': 'High',
+            'warning': 'Medium',
+            'minor': 'Low',
+            'info': 'Lowest',
+        })
+
+        # Reopen configuration: optionally reopen closed tickets on re-escalation
+        self.reopen_closed = self.config.get('reopen_closed', False)
+        self.reopen_status_name = self.config.get('reopen_status_name', 'To Do')
+
     def process_alert(self, request, medias):
         """Entry point for processing alert webhooks."""
         if not isinstance(medias, list):
@@ -107,16 +119,26 @@ class JiraPlugin:
                 try:
                     self.jira.add_comment(existing_issue, comment)
                     LOG.info("Added comment to existing issue %s for record %s", existing_issue, record_hash)
+
+                    # Optionally reopen the ticket if it is closed/done
+                    if self.reopen_closed:
+                        self._reopen_issue_if_closed(existing_issue)
+
                 except Exception as e:
-                    LOG.exception("Failed to add comment to %s: %s", existing_issue, e)
+                    LOG.exception("Failed to update %s: %s", existing_issue, e)
                 return_value[record_hash] = {'issue_key': existing_issue}
             else:
                 # Create a new JIRA issue
                 project_key = req_media.get('project_key', self.default_project_key)
                 issue_type = req_media.get('issue_type', self.default_issue_type)
-                priority = req_media.get('priority', self.default_priority)
                 labels = req_media.get('labels', self.default_labels)
                 extra_fields = req_media.get('extra_fields', self.extra_fields)
+
+                # Resolve priority: payload override > mapping from severity > default
+                priority = req_media.get('priority')
+                if not priority:
+                    severity = record.get('severity', '').lower()
+                    priority = self.priority_mapping.get(severity, self.default_priority)
 
                 if not project_key:
                     LOG.error("No project_key specified for record %s, skipping", record_hash)
@@ -188,6 +210,42 @@ class JiraPlugin:
                 if issue_key:
                     return issue_key
         return None
+
+    def _reopen_issue_if_closed(self, issue_key):
+        """Reopen a JIRA issue if it is in a done/closed status category.
+
+        Looks up the issue's current status category. If it is 'done' (closed/resolved),
+        finds a transition that moves it to the configured reopen status and applies it.
+
+        Args:
+            issue_key: The JIRA issue key (e.g. 'OPS-42')
+        """
+        try:
+            issue = self.jira.get_issue(issue_key)
+            status_category = issue.get('fields', {}).get('status', {}).get('statusCategory', {}).get('key', '')
+            if status_category == 'done':
+                transitions = self.jira.get_transitions(issue_key)
+                reopen_transition = None
+                for t in transitions:
+                    to_name = t.get('to', {}).get('name', '')
+                    if to_name.lower() == self.reopen_status_name.lower():
+                        reopen_transition = t
+                        break
+                if not reopen_transition:
+                    # Fallback: pick the first transition that is not to a 'done' category
+                    for t in transitions:
+                        to_category = t.get('to', {}).get('statusCategory', {}).get('key', '')
+                        if to_category != 'done':
+                            reopen_transition = t
+                            break
+                if reopen_transition:
+                    self.jira.transition_issue(issue_key, reopen_transition['id'],
+                                               comment='Reopened by Snooze due to re-escalation')
+                    LOG.info("Reopened issue %s via transition '%s'", issue_key, reopen_transition.get('name'))
+                else:
+                    LOG.warning("Could not find a suitable transition to reopen %s", issue_key)
+        except Exception as e:
+            LOG.exception("Failed to reopen issue %s: %s", issue_key, e)
 
     def _format_summary(self, record):
         """Format the JIRA issue summary from the alert record using the configured template.

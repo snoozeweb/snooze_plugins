@@ -77,10 +77,13 @@ This plugin's configuration is in the following YAML file: `/etc/snooze/jira.yam
 | `jira_api_token` | String | **required** | JIRA API token (create at [Atlassian API tokens](https://id.atlassian.com/manage-profile/security/api-tokens)) |
 | `project_key` | String | **required** | Default JIRA project key (e.g. `OPS`) |
 | `issue_type` | String | `Task` | Default issue type (e.g. `Task`, `Bug`, `Story`) |
-| `priority` | String | `Medium` | Default issue priority (e.g. `Highest`, `High`, `Medium`, `Low`, `Lowest`) |
+| `priority` | String | `Medium` | Default issue priority, used when severity is not found in `priority_mapping` |
+| `priority_mapping` | Dict | see below | Maps Snooze alert severity to JIRA priority name |
 | `labels` | List | `["snooze"]` | Default labels to add to created tickets |
 | `summary_template` | String | `[${severity}] ${host} - ${message}` | Template for issue summary. Available variables: `${severity}`, `${host}`, `${source}`, `${process}`, `${message}`, `${timestamp}` |
 | `extra_fields` | Dict | `{}` | Additional JIRA fields to set on issue creation (e.g. `{"components": [{"name": "Infrastructure"}]}`) |
+| `reopen_closed` | Boolean | `false` | When true, re-escalation on a closed/done JIRA ticket will reopen it |
+| `reopen_status_name` | String | `To Do` | Target status name when reopening a closed ticket (e.g. `To Do`, `Open`, `Backlog`) |
 | `ssl_verify` | Boolean | `true` | Use SSL verification for JIRA API requests |
 | `listening_address` | String | `0.0.0.0` | Address to listen to |
 | `listening_port` | Integer | `5203` | Port to listen to |
@@ -97,10 +100,18 @@ jira_api_token: ATATT3xFfGF0...
 project_key: OPS
 issue_type: Task
 priority: Medium
+priority_mapping:
+  critical: "Highest"
+  major: "High"
+  warning: "Medium"
+  minor: "Low"
+  info: "Lowest"
 labels:
   - snooze
   - monitoring
 summary_template: "[${severity}] ${host} - ${message}"
+reopen_closed: true
+reopen_status_name: "To Do"
 ssl_verify: true
 listening_address: 0.0.0.0
 listening_port: 5203
@@ -114,7 +125,27 @@ debug: false
 1. **Alert received**: SnoozeWeb sends a webhook POST to `/alert` on the daemon
 2. **New alert**: A new JIRA issue is created with the alert details (host, source, severity, message, etc.)
 3. **Re-escalation**: If the alert was already sent previously (tracked via `Inject Response`), a comment is added to the existing JIRA ticket instead of creating a duplicate
-4. **Response injection**: The JIRA issue key is returned to SnoozeWeb and stored in the record's `snooze_webhook_responses`, enabling deduplication on subsequent triggers
+4. **Reopen closed tickets** (optional): If `reopen_closed: true` is set and the existing ticket is in a done/closed status, the plugin will automatically transition it back to the configured `reopen_status_name` (default: `To Do`)
+5. **Response injection**: The JIRA issue key is returned to SnoozeWeb and stored in the record's `snooze_webhook_responses`, enabling deduplication on subsequent triggers
+
+## Priority Mapping
+
+The `priority_mapping` configuration maps Snooze alert severities to JIRA priority names. When a new ticket is created, the plugin looks up the alert's `severity` field in this mapping to determine the JIRA priority.
+
+**Default mapping:**
+
+| Snooze Severity | JIRA Priority |
+|---|---|
+| `critical` | `Highest` |
+| `major` | `High` |
+| `warning` | `Medium` |
+| `minor` | `Low` |
+| `info` | `Lowest` |
+
+Priority resolution order:
+1. Explicit `priority` in webhook payload (per-alert override)
+2. `priority_mapping` based on alert severity
+3. Default `priority` from configuration
 
 ## JIRA API Authentication
 
