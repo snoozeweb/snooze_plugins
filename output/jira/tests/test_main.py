@@ -262,6 +262,65 @@ class TestJiraPlugin:
         summary = plugin._format_summary(record)
         assert summary == 'db01: warning'
 
+    def test_format_description_template(self):
+        plugin = self._make_plugin({
+            'description_template': 'Host: ${host}\nSeverity: ${severity}\nMessage: ${message}',
+        })
+        record = {'host': 'web01', 'severity': 'critical', 'message': 'Service down'}
+        result = plugin._format_description(record)
+        assert result['type'] == 'doc'
+        assert result['version'] == 1
+        assert len(result['content']) == 3
+        assert result['content'][0]['content'][0]['text'] == 'Host: web01'
+        assert result['content'][1]['content'][0]['text'] == 'Severity: critical'
+        assert result['content'][2]['content'][0]['text'] == 'Message: Service down'
+
+    def test_format_description_template_with_snooze_url(self):
+        plugin = self._make_plugin({
+            'description_template': 'Alert: ${host} - ${message}\nLink: ${snooze_url}/web/?#/record?tab=All&s=hash%3D${hash}',
+        })
+        record = {'host': 'web01', 'message': 'Down', 'hash': 'abc123'}
+        result = plugin._format_description(record)
+        assert 'snooze.example.com' in result['content'][1]['content'][0]['text']
+        assert 'abc123' in result['content'][1]['content'][0]['text']
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_description_template_used_in_process_records(self, mock_create):
+        plugin = self._make_plugin({
+            'description_template': 'Alert on ${host}: ${message}',
+        })
+        mock_create.return_value = {'id': '10030', 'key': 'OPS-80'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'desc1', 'host': 'web01', 'severity': 'critical', 'message': 'HTTP down'}}]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        desc = call_kwargs['description_adf']
+        # Should be template-based (simple paragraphs), not the rich ADF with heading
+        assert desc['type'] == 'doc'
+        assert desc['content'][0]['content'][0]['text'] == 'Alert on web01: HTTP down'
+        # Should NOT have a heading (which the default build_description_adf adds)
+        assert desc['content'][0]['type'] == 'paragraph'
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_default_description_when_no_template(self, mock_create):
+        plugin = self._make_plugin()  # no description_template
+        mock_create.return_value = {'id': '10031', 'key': 'OPS-81'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'desc2', 'host': 'web01', 'severity': 'critical', 'message': 'HTTP down'}}]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        desc = call_kwargs['description_adf']
+        # Should use default rich ADF with heading
+        assert desc['content'][0]['type'] == 'heading'
+
     def test_find_existing_issue_found(self):
         plugin = self._make_plugin()
         record = {

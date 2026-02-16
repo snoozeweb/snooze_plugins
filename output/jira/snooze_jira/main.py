@@ -66,6 +66,7 @@ class JiraPlugin:
         self.default_priority = self.config.get('priority', 'Medium')
         self.default_labels = self.config.get('labels', ['snooze'])
         self.summary_template = self.config.get('summary_template', '[${severity}] ${host} - ${message}')
+        self.description_template = self.config.get('description_template', '')
         self.extra_fields = self.config.get('extra_fields', {})
 
         # Priority mapping: maps Snooze severity to JIRA priority name
@@ -161,7 +162,12 @@ class JiraPlugin:
                     continue
 
                 summary = self._format_summary(record)
-                description_adf = JiraClient.build_description_adf(record, self.snooze_url)
+
+                # Build description: use template if configured, otherwise use default rich ADF
+                if self.description_template:
+                    description_adf = self._format_description(record)
+                else:
+                    description_adf = JiraClient.build_description_adf(record, self.snooze_url)
 
                 # Append custom message if provided
                 if message:
@@ -362,6 +368,37 @@ class JiraPlugin:
             )
         # JIRA summary field has a 255 character limit
         return summary[:255]
+
+    def _format_description(self, record):
+        """Format the JIRA issue description from the alert record using the configured template.
+
+        Supports the same ${variable} syntax as summary_template. The rendered text
+        is converted to ADF paragraphs (one per line).
+
+        Available variables: ${severity}, ${host}, ${source}, ${process}, ${message},
+        ${timestamp}, ${hash}, ${snooze_url}
+
+        Args:
+            record: The alert record dict
+
+        Returns:
+            dict in Atlassian Document Format (ADF)
+        """
+        template = Template(self.description_template)
+        try:
+            text = template.safe_substitute(
+                severity=record.get('severity', 'Unknown'),
+                host=record.get('host', 'Unknown'),
+                source=record.get('source', 'Unknown'),
+                process=record.get('process', 'Unknown'),
+                message=record.get('message', 'No message'),
+                timestamp=record.get('timestamp', ''),
+                hash=record.get('hash', ''),
+                snooze_url=self.snooze_url,
+            )
+        except Exception:
+            text = record.get('message', 'No message')
+        return JiraClient._text_to_adf(text)
 
     def _build_comment(self, record, message=None, notification_from=None):
         """Build a comment string for an existing JIRA issue.

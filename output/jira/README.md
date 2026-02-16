@@ -81,6 +81,7 @@ This plugin's configuration is in the following YAML file: `/etc/snooze/jira.yam
 | `priority_mapping` | Dict | see below | Maps Snooze alert severity to JIRA priority name |
 | `labels` | List | `["snooze"]` | Default labels to add to created tickets |
 | `summary_template` | String | `[${severity}] ${host} - ${message}` | Template for issue summary. Available variables: `${severity}`, `${host}`, `${source}`, `${process}`, `${message}`, `${timestamp}` |
+| `description_template` | String | | Template for issue description body. When set, replaces the default rich description. Available variables: `${severity}`, `${host}`, `${source}`, `${process}`, `${message}`, `${timestamp}`, `${hash}`, `${snooze_url}`. Supports multi-line (each line becomes a paragraph). If not set, uses a rich default with bold labels and a Snooze link |
 | `extra_fields` | Dict | `{}` | Additional JIRA fields to set on issue creation (e.g. `{"components": [{"name": "Infrastructure"}]}`) |
 | `assignee` | String | | Default assignee — JIRA account ID (e.g. `5b109f2e9729b51b54dc274d`) or email address (e.g. `user@example.com`). Can be overridden per-alert in payload |
 | `reporter` | String | | Default reporter — JIRA account ID or email address. Can be overridden per-alert in payload |
@@ -114,6 +115,12 @@ labels:
   - snooze
   - monitoring
 summary_template: "[${severity}] ${host} - ${message}"
+description_template: |
+  Host: ${host}
+  Source: ${source}
+  Severity: ${severity}
+  Message: ${message}
+  Snooze: ${snooze_url}/web/?#/record?tab=All&s=hash%3D${hash}
 assignee: "5b109f2e9729b51b54dc274d"    # JIRA account ID or email
 reporter: "bot@mycompany.com"              # email-based reporter
 custom_fields:
