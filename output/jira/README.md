@@ -216,7 +216,9 @@ Payload custom fields are merged on top of config defaults (payload wins for sam
 
 The `assignee` and `reporter` fields support both JIRA account IDs and email addresses. The plugin auto-detects the format:
 
-- **Account ID** (no `@`): `assignee: "5b109f2e9729b51b54dc274d"` → `{"id": "5b109f2e9729b51b54dc274d"}`
-- **Email address** (contains `@`): `assignee: "john@example.com"` → `{"emailAddress": "john@example.com"}`
+- **Account ID** (no `@`): Used directly — `assignee: "5b109f2e9729b51b54dc274d"`
+- **Email address** (contains `@`): The plugin calls the JIRA user search API (`/rest/api/3/user/search`) to resolve the email to an `accountId` before creating the issue. Results are cached for the plugin's lifetime.
+
+If an email cannot be resolved to a JIRA user, the field is skipped and a warning is logged.
 
 Both can be overridden per-alert in the webhook payload.

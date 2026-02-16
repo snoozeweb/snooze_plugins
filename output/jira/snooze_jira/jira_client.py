@@ -135,6 +135,44 @@ class JiraClient:
         result = self._request('GET', f'/issue/{issue_key}/transitions')
         return result.get('transitions', [])
 
+    def find_user_by_email(self, email):
+        """Look up a JIRA user's accountId by email address.
+
+        Uses the /rest/api/3/user/search endpoint with the email as query.
+
+        Args:
+            email: Email address to search for
+
+        Returns:
+            accountId string if exactly one match is found, None otherwise
+        """
+        url = f"{self.base_url}/rest/api/3/user/search"
+        try:
+            resp = self.session.get(url, params={'query': email}, verify=self.verify_ssl)
+            resp.raise_for_status()
+            users = resp.json()
+            if users and len(users) == 1:
+                account_id = users[0].get('accountId')
+                LOG.info("Resolved email '%s' to accountId '%s'", email, account_id)
+                return account_id
+            elif users and len(users) > 1:
+                # Try exact match on emailAddress field
+                for user in users:
+                    if user.get('emailAddress', '').lower() == email.lower():
+                        account_id = user.get('accountId')
+                        LOG.info("Resolved email '%s' to accountId '%s' (exact match)", email, account_id)
+                        return account_id
+                # Fall back to first result
+                account_id = users[0].get('accountId')
+                LOG.warning("Multiple users found for '%s', using first: '%s'", email, account_id)
+                return account_id
+            else:
+                LOG.warning("No JIRA user found for email '%s'", email)
+                return None
+        except Exception as e:
+            LOG.exception("Failed to search for user by email '%s': %s", email, e)
+            return None
+
     @staticmethod
     def _text_to_adf(text):
         """Convert plain text to Atlassian Document Format (ADF).

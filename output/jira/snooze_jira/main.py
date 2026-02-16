@@ -185,9 +185,13 @@ class JiraPlugin:
                 # Build extra fields with assignee, reporter, and custom fields
                 combined_extra = dict(extra_fields)
                 if assignee:
-                    combined_extra['assignee'] = self._resolve_user_field(assignee)
+                    user_field = self._resolve_user_field(assignee)
+                    if user_field:
+                        combined_extra['assignee'] = user_field
                 if reporter:
-                    combined_extra['reporter'] = self._resolve_user_field(reporter)
+                    user_field = self._resolve_user_field(reporter)
+                    if user_field:
+                        combined_extra['reporter'] = user_field
                 combined_extra.update(merged_custom_fields)
 
                 try:
@@ -268,21 +272,34 @@ class JiraPlugin:
         except Exception as e:
             LOG.exception("Failed to reopen issue %s: %s", issue_key, e)
 
-    @staticmethod
-    def _resolve_user_field(value):
+    def _resolve_user_field(self, value):
         """Resolve a user identifier to a JIRA user field dict.
 
-        If the value contains '@', it is treated as an email address.
-        Otherwise, it is treated as a JIRA account ID.
+        If the value contains '@', it is treated as an email address and
+        resolved to an accountId via the JIRA user search API.
+        Otherwise, it is used directly as a JIRA account ID.
+
+        Results are cached to avoid repeated API calls.
 
         Args:
             value: An email address or JIRA account ID string
 
         Returns:
-            dict suitable for JIRA assignee/reporter fields
+            dict suitable for JIRA assignee/reporter fields, or None if email lookup fails
         """
         if '@' in value:
-            return {'emailAddress': value}
+            # Check cache first
+            if not hasattr(self, '_user_cache'):
+                self._user_cache = {}
+            if value in self._user_cache:
+                return self._user_cache[value]
+            account_id = self.jira.find_user_by_email(value)
+            if account_id:
+                result = {'id': account_id}
+                self._user_cache[value] = result
+                return result
+            LOG.warning("Could not resolve email '%s' to a JIRA accountId, skipping user field", value)
+            return None
         return {'id': value}
 
     def _format_summary(self, record):

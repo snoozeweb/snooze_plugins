@@ -173,6 +173,40 @@ class TestJiraClient:
         assert result[0]['id'] == '11'
         mock_request.assert_called_once_with('GET', '/issue/OPS-42/transitions')
 
+    def test_find_user_by_email_single_result(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [{'accountId': 'abc123', 'emailAddress': 'user@example.com'}]
+        mock_resp.raise_for_status = MagicMock()
+        self.client.session.get = MagicMock(return_value=mock_resp)
+
+        result = self.client.find_user_by_email('user@example.com')
+        assert result == 'abc123'
+        self.client.session.get.assert_called_once()
+
+    def test_find_user_by_email_no_result(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = []
+        mock_resp.raise_for_status = MagicMock()
+        self.client.session.get = MagicMock(return_value=mock_resp)
+
+        result = self.client.find_user_by_email('nobody@example.com')
+        assert result is None
+
+    def test_find_user_by_email_multiple_exact_match(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [
+            {'accountId': 'aaa', 'emailAddress': 'alice@example.com'},
+            {'accountId': 'bbb', 'emailAddress': 'bob@example.com'},
+        ]
+        mock_resp.raise_for_status = MagicMock()
+        self.client.session.get = MagicMock(return_value=mock_resp)
+
+        result = self.client.find_user_by_email('bob@example.com')
+        assert result == 'bbb'
+
 
 class TestJiraPlugin:
     """Tests for the main JiraPlugin logic."""
@@ -561,8 +595,9 @@ class TestJiraPlugin:
         call_kwargs = mock_create.call_args[1]
         assert call_kwargs['extra_fields']['assignee'] == {'id': '5b109f2e9729b51b54dc274d'}
 
+    @patch.object(JiraClient, 'find_user_by_email', return_value='resolved-account-id-1')
     @patch.object(JiraClient, 'create_issue')
-    def test_assignee_email_from_config(self, mock_create):
+    def test_assignee_email_from_config(self, mock_create, mock_find):
         plugin = self._make_plugin({'assignee': 'john@example.com'})
         mock_create.return_value = {'id': '10010', 'key': 'OPS-60'}
 
@@ -572,8 +607,9 @@ class TestJiraPlugin:
         medias = [{'alert': {'hash': 'assign_email1', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
 
         plugin.process_records(req, medias)
+        mock_find.assert_called_once_with('john@example.com')
         call_kwargs = mock_create.call_args[1]
-        assert call_kwargs['extra_fields']['assignee'] == {'emailAddress': 'john@example.com'}
+        assert call_kwargs['extra_fields']['assignee'] == {'id': 'resolved-account-id-1'}
 
     @patch.object(JiraClient, 'create_issue')
     def test_reporter_from_config(self, mock_create):
@@ -589,8 +625,9 @@ class TestJiraPlugin:
         call_kwargs = mock_create.call_args[1]
         assert call_kwargs['extra_fields']['reporter'] == {'id': '5b10a2844c20165700ede21g'}
 
+    @patch.object(JiraClient, 'find_user_by_email', return_value='resolved-account-id-2')
     @patch.object(JiraClient, 'create_issue')
-    def test_reporter_email_from_config(self, mock_create):
+    def test_reporter_email_from_config(self, mock_create, mock_find):
         plugin = self._make_plugin({'reporter': 'jane@example.com'})
         mock_create.return_value = {'id': '10011', 'key': 'OPS-61'}
 
@@ -600,8 +637,9 @@ class TestJiraPlugin:
         medias = [{'alert': {'hash': 'report_email1', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
 
         plugin.process_records(req, medias)
+        mock_find.assert_called_once_with('jane@example.com')
         call_kwargs = mock_create.call_args[1]
-        assert call_kwargs['extra_fields']['reporter'] == {'emailAddress': 'jane@example.com'}
+        assert call_kwargs['extra_fields']['reporter'] == {'id': 'resolved-account-id-2'}
 
     @patch.object(JiraClient, 'create_issue')
     def test_custom_fields_from_config(self, mock_create):
@@ -661,8 +699,9 @@ class TestJiraPlugin:
         call_kwargs = mock_create.call_args[1]
         assert call_kwargs['extra_fields']['assignee'] == {'id': 'payload_user'}
 
+    @patch.object(JiraClient, 'find_user_by_email', return_value='resolved-override-id')
     @patch.object(JiraClient, 'create_issue')
-    def test_assignee_payload_override_email(self, mock_create):
+    def test_assignee_payload_override_email(self, mock_create, mock_find):
         plugin = self._make_plugin({'assignee': 'config_id'})
         mock_create.return_value = {'id': '10013', 'key': 'OPS-63'}
 
@@ -675,8 +714,9 @@ class TestJiraPlugin:
         }]
 
         plugin.process_records(req, medias)
+        mock_find.assert_called_once_with('override@example.com')
         call_kwargs = mock_create.call_args[1]
-        assert call_kwargs['extra_fields']['assignee'] == {'emailAddress': 'override@example.com'}
+        assert call_kwargs['extra_fields']['assignee'] == {'id': 'resolved-override-id'}
 
     @patch.object(JiraClient, 'create_issue')
     def test_no_assignee_when_empty(self, mock_create):
@@ -706,3 +746,39 @@ class TestJiraPlugin:
         call_kwargs = mock_create.call_args[1]
         # No custom fields, no assignee, no reporter => extra_fields should be empty
         assert call_kwargs['extra_fields'] == {}
+
+    @patch.object(JiraClient, 'find_user_by_email', return_value=None)
+    @patch.object(JiraClient, 'create_issue')
+    def test_assignee_email_lookup_failure_skips_field(self, mock_create, mock_find):
+        plugin = self._make_plugin({'assignee': 'unknown@example.com'})
+        mock_create.return_value = {'id': '10016', 'key': 'OPS-66'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{'alert': {'hash': 'fail_email', 'host': 'web01', 'severity': 'critical', 'message': 'Down'}}]
+
+        plugin.process_records(req, medias)
+        mock_find.assert_called_once_with('unknown@example.com')
+        call_kwargs = mock_create.call_args[1]
+        # Assignee should be skipped when email lookup fails
+        assert 'assignee' not in call_kwargs['extra_fields']
+
+    @patch.object(JiraClient, 'find_user_by_email', return_value='cached-id')
+    @patch.object(JiraClient, 'create_issue')
+    def test_email_lookup_is_cached(self, mock_create, mock_find):
+        plugin = self._make_plugin({'assignee': 'cached@example.com'})
+        mock_create.return_value = {'id': '10017', 'key': 'OPS-67'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [
+            {'alert': {'hash': 'cache1', 'host': 'web01', 'severity': 'critical', 'message': 'First'}},
+            {'alert': {'hash': 'cache2', 'host': 'web02', 'severity': 'warning', 'message': 'Second'}},
+        ]
+
+        plugin.process_records(req, medias)
+        # Should only call find_user_by_email once due to caching
+        mock_find.assert_called_once_with('cached@example.com')
+        assert mock_create.call_count == 2
