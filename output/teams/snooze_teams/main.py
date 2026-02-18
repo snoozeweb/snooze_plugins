@@ -456,6 +456,27 @@ class TeamsPlugin(SnoozeBotPlugin):
             return '{}/{}/replies'.format(base_url.rstrip('/'), thread_id)
         return base_url
 
+    def build_channel_info_url(self, channel_id):
+        if channel_id.startswith('https://teams.microsoft.com/l/channel/'):
+            parsed = urlparse(channel_id)
+            path_parts = parsed.path.split('/')
+            channel_ref = unquote(path_parts[3]) if len(path_parts) > 3 else ''
+            group_id = parse_qs(parsed.query).get('groupId', [''])[0]
+            if channel_ref and group_id:
+                return 'https://graph.microsoft.com/beta/teams/{}/channels/{}'.format(group_id, channel_ref)
+        if channel_id.startswith('https://graph.microsoft.com/'):
+            if channel_id.endswith('/messages'):
+                return channel_id[:-9]
+            return channel_id
+        if channel_id.startswith('teams/') or channel_id.startswith('/teams/'):
+            rel = channel_id.lstrip('/')
+            if rel.endswith('/messages'):
+                rel = rel[:-9]
+            return 'https://graph.microsoft.com/beta/{}'.format(rel)
+        if channel_id.endswith('@thread.tacv2'):
+            return 'https://graph.microsoft.com/beta/{}'.format(channel_id)
+        return 'https://graph.microsoft.com/beta/{}@thread.tacv2'.format(channel_id)
+
     def fetch_messages(self, resource):
         url = self.build_messages_url(resource)
         resp = self.driver.con.get(url)
@@ -537,7 +558,7 @@ class TeamsPlugin(SnoozeBotPlugin):
         if channel_id in self._channel_layout_cache:
             return self._channel_layout_cache[channel_id]
         try:
-            url = 'https://graph.microsoft.com/beta/{}@thread.tacv2'.format(channel_id)
+            url = self.build_channel_info_url(channel_id)
             resp = self.driver.con.get(url)
             data = resp.json()
             layout = data.get('layoutType', 'post')
