@@ -46,8 +46,13 @@ Configuration hints:
 * In _URL_, put the alert enpoint of the plugin's daemon (if the daemon runs on the same server as Snooze-server: http://localhost:5202/alert)
 * In _Payload_, put `{"channels": ["********"], "alert": {{ __self__  | tojson() }} }`
   * Replace `********` with Teams Channel ID (ex: `teams/500739d4-3478-4304-bf16-23a4ae0f09ff/channels/19:jKFUn31rBB3gt6WCW2ZA7N6y-n2GWd3kiw`)
+  * To post as **replies in a thread** instead of new top-level messages, append `/messages/{parent_message_id}` to the channel ID (ex: `teams/.../channels/19:.../messages/1616990032035`)
 * Check `Inject Response`
 * Check `Batch` if you want multiple alerts to be grouped in the same thread
+
+* The plugin **auto-detects** the channel layout type (Posts or Threads) via the Microsoft Graph API. No extra configuration is needed:
+  * **Posts** layout channels: Messages are sent as adaptive cards (current behavior)
+  * **Threads** (chat) layout channels: Messages are sent as flat HTML. Re-escalations are posted as replies to the original message
 
 ## Create Notification
 

@@ -65,7 +65,7 @@ class SnoozeBotPlugin():
         LOG.debug("Response: {}".format(response))
         return response
 
-    def send_message(self, message, channel_id="", thread={}, attachment={}, request={}):
+    def send_message(self, message, channel_id="", thread={}, attachment={}, request={}, layout_type='post'):
         return
 
     def process_records(self, req, medias):
@@ -85,16 +85,28 @@ class SnoozeBotPlugin():
                 header = True
                 if len(content) > self.message_limit:
                     footer = True
+            # Parse channel_id: if it contains /messages/{id}, extract parent thread for replies
+            actual_channel = channel
+            channel_parent_thread = {}
+            match = re.match(r'^(.+)/messages/(.+)$', channel)
+            if match:
+                actual_channel = match.group(1)
+                channel_parent_thread = {'channel_id': actual_channel, 'thread_id': match.group(2)}
+            # Detect channel layout type (post or chat)
+            layout_type = self.get_channel_layout(actual_channel) if hasattr(self, 'get_channel_layout') else 'post'
             attachment = [{'text': 'Acknowledge', 'action': 'ack', 'style': 'success'}, {'text': 'Close', 'action': 'close', 'style': 'primary'}]
             if not multi and content[0]['threads']:
                 for thread in content[0]['threads']:
-                    self.send_message(content[0]['msg'], channel_id=channel, thread=thread, attachment=attachment, request=req)
+                    self.send_message(content[0]['msg'], channel_id=actual_channel, thread=thread, attachment=attachment, request=req, layout_type=layout_type)
                 return_value = {content[0]['record_hash']: {'threads': content[0]['threads'], 'multithreads': content[0]['multithreads']}}
             else:
-                resp = self.send_message({'header': header, 'footer': footer, 'messages': content}, channel_id=channel, attachment=attachment, request=req)
+                resp = self.send_message({'header': header, 'footer': footer, 'messages': content}, channel_id=actual_channel, thread=channel_parent_thread, attachment=attachment, request=req, layout_type=layout_type)
                 if resp:
                     for message in content:
-                        t = {'channel_id': channel, 'thread_id': resp.get('root_id', resp['id'])}
+                        if channel_parent_thread:
+                            t = channel_parent_thread.copy()
+                        else:
+                            t = {'channel_id': actual_channel, 'thread_id': resp.get('root_id', resp['id'])}
                         if multi:
                             message['multithreads'].append(t)
                         else:
@@ -373,18 +385,47 @@ class AlertRoute():
 
 class TeamsPlugin(SnoozeBotPlugin):
 
+    def __init__(self, config):
+        super().__init__(config)
+        self._channel_layout_cache = {}
+
     def on_alert(self, request, medias):
         response = self.process_alert(request, medias)
 
-    def send_message(self, message, channel_id="", thread={}, attachment={}, request={}):
-        data = self.format_message(message, thread)
+    def get_channel_layout(self, channel_id):
+        """Auto-detect the channel layout type via the Graph API.
+
+        Queries GET /beta/{channel_id}@thread.tacv2 and reads the layoutType property.
+        Results are cached per channel_id.
+
+        Returns:
+            'post' (default) or 'chat'
+        """
+        if channel_id in self._channel_layout_cache:
+            return self._channel_layout_cache[channel_id]
+        try:
+            url = 'https://graph.microsoft.com/beta/{}@thread.tacv2'.format(channel_id)
+            resp = self.driver.con.get(url)
+            data = resp.json()
+            layout = data.get('layoutType', 'post')
+            LOG.info("Channel %s has layout type: %s", channel_id, layout)
+            self._channel_layout_cache[channel_id] = layout
+            return layout
+        except Exception as e:
+            LOG.warning("Failed to detect channel layout for %s, defaulting to 'post': %s", channel_id, e)
+            self._channel_layout_cache[channel_id] = 'post'
+            return 'post'
+
+    def send_message(self, message, channel_id="", thread={}, attachment={}, request={}, layout_type='post'):
+        if layout_type == 'chat':
+            data = self.format_flat_message(message, thread)
+        else:
+            data = self.format_message(message, thread)
         LOG.debug('Posting on {}'.format(channel_id))
         props = {}
         thread_id = ''
         if thread:
             thread_id = '/{}/replies'.format(thread['thread_id'])
-        #if attachment and request:
-        #    props= {'attachments': [{'actions': [{'name': button.get('text'), 'style':  button.get('style', 'default'), 'integration': {'url': '{}://{}/action'.format(request.scheme, get_ip()+':'+str(self.port) if request.host.split(':')[0] in ['127.0.0.1', 'localhost'] else request.host), 'context': {'action': button.get('action')}}} for button in attachment]}]}
         for n in range(3):
             try:
                 resp = self.driver.con.post('https://graph.microsoft.com/beta/{}@thread.tacv2/messages{}'.format(channel_id, thread_id), data=data)
@@ -512,6 +553,86 @@ class TeamsPlugin(SnoozeBotPlugin):
         }
         LOG.info(card)
         return card
+
+    def format_flat_message(self, message, thread):
+        """Format a flat HTML message for chat-layout (Threads) channels.
+
+        Unlike format_message which produces adaptive cards, this creates
+        simple HTML content suitable for chat-style channels.
+        """
+        website = self.snooze_url
+        one_message = message
+        if len(message.get('messages', [])) == 1:
+            one_message = message['messages'][0]['msg']
+        from_message = ''
+        if one_message.get('from'):
+            from_message = 'From <b>{}</b>'.format(one_message.get('from'))
+            if one_message.get('from_msg'):
+                from_message += ': {}'.format(one_message.get('from_msg'))
+
+        if not 'messages' in message:
+            # Single re-escalation message (reply to existing thread)
+            simple_message = ''
+            if from_message:
+                simple_message = from_message + '<br>'
+            if message.get('reply'):
+                simple_message += SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format), message.get('reply'))
+            else:
+                record = message['record']
+                timestamp = SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format), record.get('timestamp', str(datetime.now().astimezone())))
+                msg = parse_emoji("::warning:: <b>New escalation</b> on {} ::warning::".format(timestamp))
+                if len(record.get('message', '')) > 0:
+                    msg += '<br>{}'.format(record.get('message'))
+                simple_message += msg
+            return {'body': {'content': simple_message, 'contentType': 'html'}}
+
+        # Build flat HTML for one or multiple alerts
+        parts = []
+        if message.get('header'):
+            parts.append(parse_emoji('::warning:: <b>Received {} alerts</b> ::warning::'.format(len(message['messages']))))
+        else:
+            parts.append(parse_emoji('::warning:: <b>Received alert</b> ::warning::'))
+
+        if from_message:
+            parts.append(from_message)
+
+        for msg_item in message['messages']:
+            msg = msg_item.get('msg', {})
+            record = msg.get('record', {})
+            if not record:
+                continue
+            host = record.get('host', 'Unknown')
+            source = record.get('source', 'Unknown')
+            process = record.get('process', 'Unknown')
+            severity = record.get('severity', 'Unknown')
+            alert_message = record.get('message', '')
+            record_hash = record.get('hash', '')
+            timestamp = SnoozeBotPlugin.date_regex.sub(
+                lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format),
+                record.get('timestamp', str(datetime.now().astimezone()))
+            )
+
+            link = '<a href="{}/web/?#/record?tab=All&s=hash%3D{}">{}</a>'.format(website, record_hash, host)
+            escalation = ' (e)' if msg.get('threads') else ''
+
+            line = '<b>{}{}</b> [{}] <i>{}</i>'.format(link, escalation, source, process)
+            if severity:
+                line += ' - {}'.format(severity)
+            if alert_message:
+                line += '<br>{}'.format(alert_message)
+            if msg.get('from'):
+                notif = 'From <b>{}</b>'.format(msg.get('from'))
+                if msg.get('from_msg'):
+                    notif += ': {}'.format(msg.get('from_msg'))
+                line += ' ({})'.format(notif)
+            if msg.get('message'):
+                line += '<br><i>{}</i>'.format(msg.get('message'))
+            parts.append(line)
+
+        if message.get('footer'):
+            parts.append('Check all alerts in <a href="{}/web">Snoozeweb</a>'.format(website))
+
+        return {'body': {'content': '<br>'.join(parts), 'contentType': 'html'}}
 
 class TeamsBot():
 
