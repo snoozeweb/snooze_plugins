@@ -435,8 +435,37 @@ class TeamsPlugin(SnoozeBotPlugin):
             return 'https://graph.microsoft.com/beta/{}/messages'.format(resource)
         return 'https://graph.microsoft.com/beta/{}@thread.tacv2/messages'.format(resource)
 
+    def build_post_messages_url(self, channel_id, thread_id=''):
+        if channel_id.startswith('https://teams.microsoft.com/l/channel/'):
+            base_url = self.build_messages_url(channel_id)
+        elif channel_id.startswith('https://graph.microsoft.com/'):
+            base_url = channel_id
+            if not base_url.endswith('/messages'):
+                base_url = '{}/messages'.format(base_url.rstrip('/'))
+        elif channel_id.startswith('teams/') or channel_id.startswith('/teams/'):
+            rel = channel_id.lstrip('/')
+            if rel.endswith('/messages'):
+                base_url = 'https://graph.microsoft.com/beta/{}'.format(rel)
+            else:
+                base_url = 'https://graph.microsoft.com/beta/{}/messages'.format(rel)
+        elif channel_id.endswith('@thread.tacv2'):
+            base_url = 'https://graph.microsoft.com/beta/{}/messages'.format(channel_id)
+        else:
+            base_url = 'https://graph.microsoft.com/beta/{}@thread.tacv2/messages'.format(channel_id)
+        if thread_id:
+            return '{}/{}/replies'.format(base_url.rstrip('/'), thread_id)
+        return base_url
+
     def fetch_messages(self, resource):
         url = self.build_messages_url(resource)
+        resp = self.driver.con.get(url)
+        data = resp.json()
+        if isinstance(data, dict):
+            return data.get('value', [])
+        return []
+
+    def fetch_replies(self, resource, message_id):
+        url = '{}/{}/replies'.format(self.build_messages_url(resource).rstrip('/'), message_id)
         resp = self.driver.con.get(url)
         data = resp.json()
         if isinstance(data, dict):
@@ -529,10 +558,11 @@ class TeamsPlugin(SnoozeBotPlugin):
         props = {}
         thread_id = ''
         if thread:
-            thread_id = '/{}/replies'.format(thread['thread_id'])
+            thread_id = thread['thread_id']
+        url = self.build_post_messages_url(channel_id, thread_id)
         for n in range(3):
             try:
-                resp = self.driver.con.post('https://graph.microsoft.com/beta/{}@thread.tacv2/messages{}'.format(channel_id, thread_id), data=data)
+                resp = self.driver.con.post(url, data=data)
                 return resp.json()
             except Exception as e:
                 LOG.exception(e)
@@ -783,25 +813,39 @@ class TeamsPoller(threading.Thread):
 
     def _poll_resource(self, resource):
         checkpoint = self._get_checkpoint(resource)
-        messages = self.plugin.fetch_messages(resource)
-        messages = sorted(messages, key=lambda m: m.get('createdDateTime', ''))
-        for graph_message in messages:
+        roots = self.plugin.fetch_messages(resource)
+        roots = sorted(roots, key=lambda m: m.get('createdDateTime', ''))
+        for graph_message in roots:
+            self._process_graph_message(resource, graph_message, checkpoint)
+            root_id = graph_message.get('id')
+            if not root_id:
+                continue
+            try:
+                replies = self.plugin.fetch_replies(resource, root_id)
+            except Exception as e:
+                LOG.debug('Unable to fetch replies for %s in %s: %s', root_id, resource, e)
+                continue
+            replies = sorted(replies, key=lambda m: m.get('createdDateTime', ''))
+            for reply in replies:
+                self._process_graph_message(resource, reply, checkpoint)
+
+    def _process_graph_message(self, resource, graph_message, checkpoint):
             message_id = graph_message.get('id')
             if not message_id:
-                continue
+                return
             if message_id in checkpoint['recent_id_set']:
-                continue
+                return
             created = self._parse_graph_datetime(graph_message.get('createdDateTime'))
             if created and created <= checkpoint['since']:
                 self._remember_id(checkpoint, message_id)
-                continue
+                return
             self._remember_id(checkpoint, message_id)
             checkpoint['since'] = max(checkpoint['since'], created) if created else checkpoint['since']
             if self.plugin.is_self_message(graph_message):
-                continue
+                return
             msg = self.plugin.normalize_incoming_message(graph_message)
             if not getattr(msg, 'text', '').strip():
-                continue
+                return
             try:
                 response_text = self.plugin.process_user_message(msg)
                 self.plugin.reply_to_polled_message(response_text, resource, graph_message)
