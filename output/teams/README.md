@@ -1,9 +1,3 @@
-# WIP #
-
-Not working right now:
-
-* Chat interaction with the bot
-
 # Microsoft Teams Bot plugin
 
 This plugin is used to display SnoozeWeb alerts in Teams using a chatbot. Users can also partially manage these alerts directly from the chat.
@@ -37,6 +31,14 @@ $ sudo systemctl start snooze-teams
 * [Azure App](https://learn.microsoft.com/en-us/graph/auth-register-app-v2): Microsoft Azure App to post messages in Teams 
 * Snooze Action (webhook): Communication between Snooze Server and Snooze Teams daemon. See below
 
+Recommended Microsoft Graph delegated permissions for polling + replies:
+* `ChannelMessage.Send`
+* `ChannelMessage.Read.All`
+* `Chat.Read`
+* `Chat.ReadBasic`
+* `Team.ReadBasic.All`
+* `Channel.ReadBasic.All`
+
 ## Create Action
 
 In SnoozeWeb, go to the _Actions_ tab then click on **New**
@@ -53,6 +55,10 @@ Configuration hints:
 * The plugin **auto-detects** the channel layout type (Posts or Threads) via the Microsoft Graph API. No extra configuration is needed:
   * **Posts** layout channels: Messages are sent as adaptive cards (current behavior)
   * **Threads** (chat) layout channels: Messages are sent as flat HTML. Re-escalations are posted as replies to the original message
+
+* The plugin can now process user messages **without public inbound webhook access** by polling Graph messages for known/configured channels:
+  * Channels used by Snooze alert actions are learned automatically.
+  * You can also preconfigure resources with `poll_resources`.
 
 ## Create Notification
 
@@ -78,3 +84,10 @@ This plugin's configuration is in the following YAML file: `/etc/snooze/teamsbot
 * `snooze_limit` (Integer, defaults to `message_limit` value): Maximum number of alerts that can be snoozed at the same time without using an explicit condition
 * `bot_name` (String, defaults to `'Bot'`): Teams Bot name
 * `debug` (Boolean, defaults to `false`): Show debug logs
+* `poll_interval_seconds` (Integer, defaults to `10`): Delay between each polling cycle
+* `poll_lookback_seconds` (Integer, defaults to `120`): Initial lookback window for startup checkpoint (older messages are ignored)
+* `ignore_self_messages` (Boolean, defaults to `true`): Ignore messages sent by the bot/application itself to avoid loops
+* `poll_resources` (List of strings, optional): Explicit resources to poll. Accepted forms:
+  * Channel ID-like form (ex: `teams/{team-id}/channels/{channel-id}`)
+  * Graph relative form (ex: `/teams/{team-id}/channels/{channel-id}/messages`)
+  * Full Graph URL

@@ -5,11 +5,14 @@ import re
 import logging
 import uuid
 import time
+import html
+import threading
 import falcon
 from datetime import datetime, timedelta
 from dateutil import parser
 from pathlib import Path
 from string import Template
+from types import SimpleNamespace
 from snooze_client import Snooze
 from snooze_teams.bot_parser import parser as bot_parser
 from snooze_teams.bot_emoji import parse_emoji
@@ -92,6 +95,8 @@ class SnoozeBotPlugin():
             if match:
                 actual_channel = match.group(1)
                 channel_parent_thread = {'channel_id': actual_channel, 'thread_id': match.group(2)}
+            if hasattr(self, 'register_poll_resource'):
+                self.register_poll_resource(actual_channel)
             # Detect channel layout type (post or chat)
             layout_type = self.get_channel_layout(actual_channel) if hasattr(self, 'get_channel_layout') else 'post'
             attachment = [{'text': 'Acknowledge', 'action': 'ack', 'style': 'success'}, {'text': 'Close', 'action': 'close', 'style': 'primary'}]
@@ -388,9 +393,100 @@ class TeamsPlugin(SnoozeBotPlugin):
     def __init__(self, config):
         super().__init__(config)
         self._channel_layout_cache = {}
+        self.poll_interval_seconds = int(self.config.get('poll_interval_seconds', 10))
+        self.poll_lookback_seconds = int(self.config.get('poll_lookback_seconds', 120))
+        self.ignore_self_messages = bool(self.config.get('ignore_self_messages', True))
+        resources = self.config.get('poll_resources', [])
+        if isinstance(resources, str):
+            resources = [resources]
+        self._poll_resources = set(resources)
+        self._poll_resources_lock = threading.Lock()
+        self._poller = None
 
     def on_alert(self, request, medias):
         response = self.process_alert(request, medias)
+
+    def register_poll_resource(self, channel_id):
+        if not channel_id:
+            return
+        with self._poll_resources_lock:
+            self._poll_resources.add(channel_id)
+
+    def get_poll_resources(self):
+        with self._poll_resources_lock:
+            return list(self._poll_resources)
+
+    def build_messages_url(self, resource):
+        if resource.startswith('https://graph.microsoft.com/'):
+            return resource
+        if resource.startswith('/'):
+            return 'https://graph.microsoft.com/beta{}'.format(resource)
+        if resource.endswith('/messages'):
+            return 'https://graph.microsoft.com/beta/{}'.format(resource)
+        if resource.endswith('@thread.tacv2'):
+            return 'https://graph.microsoft.com/beta/{}/messages'.format(resource)
+        return 'https://graph.microsoft.com/beta/{}@thread.tacv2/messages'.format(resource)
+
+    def fetch_messages(self, resource):
+        url = self.build_messages_url(resource)
+        resp = self.driver.con.get(url)
+        data = resp.json()
+        if isinstance(data, dict):
+            return data.get('value', [])
+        return []
+
+    def _strip_html(self, text):
+        text = re.sub(r'<[^>]*>', ' ', text or '')
+        text = html.unescape(text)
+        return re.sub(r'\s+', ' ', text).strip()
+
+    def is_self_message(self, graph_message):
+        if not self.ignore_self_messages:
+            return False
+        sender = graph_message.get('from', {})
+        if sender.get('application'):
+            return True
+        user = sender.get('user', {})
+        sender_name = user.get('displayName', '')
+        return sender_name.casefold() == self.bot_name.casefold()
+
+    def normalize_incoming_message(self, graph_message):
+        sender = graph_message.get('from', {}).get('user', {})
+        body = graph_message.get('body', {})
+        content = body.get('content', '')
+        if body.get('contentType', '').casefold() == 'html':
+            text = self._strip_html(content)
+        else:
+            text = (content or '').strip()
+        root_id = graph_message.get('replyToId') or graph_message.get('id')
+        return SimpleNamespace(
+            user_name=sender.get('displayName', 'unknown'),
+            sender_name=sender.get('displayName', 'unknown'),
+            text=text,
+            id=graph_message.get('id'),
+            root_id=root_id,
+            body=body,
+        )
+
+    def reply_to_polled_message(self, response_text, channel_id, graph_message):
+        if not response_text:
+            return
+        thread_id = graph_message.get('replyToId') or graph_message.get('id')
+        if not thread_id:
+            return
+        layout_type = self.get_channel_layout(channel_id)
+        self.send_message({'reply': response_text}, channel_id=channel_id, thread={'thread_id': thread_id}, layout_type=layout_type)
+
+    def start_polling(self):
+        if self._poller:
+            return
+        self._poller = TeamsPoller(self)
+        self._poller.start()
+
+    def stop_polling(self):
+        if self._poller:
+            self._poller.kill()
+            self._poller = None
 
     def get_channel_layout(self, channel_id):
         """Auto-detect the channel layout type via the Graph API.
@@ -442,7 +538,11 @@ class TeamsPlugin(SnoozeBotPlugin):
         wsgi_options = Adjustments(host=self.address, port=self.port)
         httpd = TcpWSGIServer(self.app, adj=wsgi_options)
         LOG.info("Serving on port {}...".format(str(self.port)))
-        httpd.run()
+        self.start_polling()
+        try:
+            httpd.run()
+        finally:
+            self.stop_polling()
 
     def format_message(self, message, thread):
         uid = uuid.uuid4().hex
@@ -634,6 +734,90 @@ class TeamsPlugin(SnoozeBotPlugin):
 
         return {'body': {'content': '<br>'.join(parts), 'contentType': 'html'}}
 
+
+class TeamsPoller(threading.Thread):
+
+    def __init__(self, plugin):
+        super(TeamsPoller, self).__init__(daemon=True)
+        self.plugin = plugin
+        self._stop_event = threading.Event()
+        self._checkpoints = {}
+        self._lookback = timedelta(seconds=self.plugin.poll_lookback_seconds)
+        self._recent_ids_limit = 2000
+
+    def _get_checkpoint(self, resource):
+        if resource in self._checkpoints:
+            return self._checkpoints[resource]
+        checkpoint = {
+            'since': datetime.now().astimezone() - self._lookback,
+            'recent_ids': [],
+            'recent_id_set': set(),
+        }
+        self._checkpoints[resource] = checkpoint
+        return checkpoint
+
+    def _remember_id(self, checkpoint, message_id):
+        if message_id in checkpoint['recent_id_set']:
+            return
+        checkpoint['recent_ids'].append(message_id)
+        checkpoint['recent_id_set'].add(message_id)
+        if len(checkpoint['recent_ids']) > self._recent_ids_limit:
+            old = checkpoint['recent_ids'].pop(0)
+            checkpoint['recent_id_set'].discard(old)
+
+    def _parse_graph_datetime(self, text):
+        if not text:
+            return None
+        try:
+            return parser.parse(text)
+        except Exception:
+            return None
+
+    def _poll_resource(self, resource):
+        checkpoint = self._get_checkpoint(resource)
+        messages = self.plugin.fetch_messages(resource)
+        messages = sorted(messages, key=lambda m: m.get('createdDateTime', ''))
+        for graph_message in messages:
+            message_id = graph_message.get('id')
+            if not message_id:
+                continue
+            if message_id in checkpoint['recent_id_set']:
+                continue
+            created = self._parse_graph_datetime(graph_message.get('createdDateTime'))
+            if created and created <= checkpoint['since']:
+                self._remember_id(checkpoint, message_id)
+                continue
+            self._remember_id(checkpoint, message_id)
+            checkpoint['since'] = max(checkpoint['since'], created) if created else checkpoint['since']
+            if self.plugin.is_self_message(graph_message):
+                continue
+            msg = self.plugin.normalize_incoming_message(graph_message)
+            if not getattr(msg, 'text', '').strip():
+                continue
+            try:
+                response_text = self.plugin.process_user_message(msg)
+                self.plugin.reply_to_polled_message(response_text, resource, graph_message)
+            except Exception as e:
+                LOG.exception("Failed to process polled message %s on %s: %s", message_id, resource, e)
+
+    def run(self):
+        LOG.info("Starting Teams polling worker (interval=%ss)", self.plugin.poll_interval_seconds)
+        while not self._stop_event.is_set():
+            resources = self.plugin.get_poll_resources()
+            for resource in resources:
+                if self._stop_event.is_set():
+                    break
+                try:
+                    self._poll_resource(resource)
+                except Exception as e:
+                    LOG.warning("Polling failed for %s: %s", resource, e)
+            self._stop_event.wait(self.plugin.poll_interval_seconds)
+        LOG.info("Teams polling worker stopped")
+
+    def kill(self):
+        self._stop_event.set()
+        self.join(timeout=5)
+
 class TeamsBot():
 
     def __init__(self):
@@ -641,7 +825,15 @@ class TeamsBot():
         client_id = self.snoozebot.config.get('client_id')
         client_secret = self.snoozebot.config.get('client_secret')
         tenant_id = self.snoozebot.config.get('tenant_id')
-        scopes = ['offline_access', 'ChannelMessage.Send', 'Chat.ReadBasic', 'Team.ReadBasic.All', 'Channel.ReadBasic.All']
+        scopes = [
+            'offline_access',
+            'ChannelMessage.Send',
+            'ChannelMessage.Read.All',
+            'Chat.Read',
+            'Chat.ReadBasic',
+            'Team.ReadBasic.All',
+            'Channel.ReadBasic.All'
+        ]
         credentials = (client_id, client_secret)
         protocol = MSGraphProtocol(api_version='beta')
         account = Account(credentials, tenant_id=tenant_id, protocol=protocol)
