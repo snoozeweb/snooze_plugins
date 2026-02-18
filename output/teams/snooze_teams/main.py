@@ -13,6 +13,7 @@ from dateutil import parser
 from pathlib import Path
 from string import Template
 from types import SimpleNamespace
+from urllib.parse import urlparse, parse_qs, unquote
 from snooze_client import Snooze
 from snooze_teams.bot_parser import parser as bot_parser
 from snooze_teams.bot_emoji import parse_emoji
@@ -417,6 +418,13 @@ class TeamsPlugin(SnoozeBotPlugin):
             return list(self._poll_resources)
 
     def build_messages_url(self, resource):
+        if resource.startswith('https://teams.microsoft.com/l/channel/'):
+            parsed = urlparse(resource)
+            path_parts = parsed.path.split('/')
+            channel_id = unquote(path_parts[3]) if len(path_parts) > 3 else ''
+            group_id = parse_qs(parsed.query).get('groupId', [''])[0]
+            if channel_id and group_id:
+                return 'https://graph.microsoft.com/beta/teams/{}/channels/{}/messages'.format(group_id, channel_id)
         if resource.startswith('https://graph.microsoft.com/'):
             return resource
         if resource.startswith('/'):

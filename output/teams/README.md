@@ -91,3 +91,4 @@ This plugin's configuration is in the following YAML file: `/etc/snooze/teamsbot
   * Channel ID-like form (ex: `teams/{team-id}/channels/{channel-id}`)
   * Graph relative form (ex: `/teams/{team-id}/channels/{channel-id}/messages`)
   * Full Graph URL
+  * Teams channel URL copied from the Teams UI (ex: `https://teams.microsoft.com/l/channel/...?...groupId=...`)
