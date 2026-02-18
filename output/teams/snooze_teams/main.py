@@ -849,8 +849,19 @@ class TeamsBot():
         missing_scopes = set(expected_scopes)
         if account.is_authenticated:
             try:
-                token_data = account.con.token_backend.get_access_token()
-                token_scopes = set((token_data.get('scope', '') or '').split())
+                token_data = {}
+                token_backend = account.con.token_backend
+                if hasattr(token_backend, 'get_access_token'):
+                    token_data = token_backend.get_access_token() or {}
+                else:
+                    if hasattr(token_backend, 'load_token'):
+                        token_backend.load_token()
+                    token_data = getattr(token_backend, 'token', {}) or {}
+                token_scope_value = token_data.get('scope', '')
+                if isinstance(token_scope_value, list):
+                    token_scopes = set(token_scope_value)
+                else:
+                    token_scopes = set((token_scope_value or '').split())
                 missing_scopes = set(
                     scope for scope in expected_scopes
                     if scope != 'offline_access' and scope not in token_scopes and 'https://graph.microsoft.com/{}'.format(scope) not in token_scopes
