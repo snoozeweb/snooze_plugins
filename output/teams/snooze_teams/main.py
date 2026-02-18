@@ -413,6 +413,8 @@ class TeamsPlugin(SnoozeBotPlugin):
         self._poll_resources = set(resources)
         self._poll_resources_lock = threading.Lock()
         self._poller = None
+        self.self_user_id = ''
+        self.self_user_name = ''
 
     def _normalize_channel_ref(self, channel_ref):
         if not channel_ref:
@@ -547,7 +549,12 @@ class TeamsPlugin(SnoozeBotPlugin):
         if sender.get('application'):
             return True
         user = sender.get('user', {})
+        sender_id = user.get('id', '')
         sender_name = user.get('displayName', '')
+        if self.self_user_id and sender_id == self.self_user_id:
+            return True
+        if self.self_user_name and sender_name.casefold() == self.self_user_name.casefold():
+            return True
         return sender_name.casefold() == self.bot_name.casefold()
 
     def normalize_incoming_message(self, graph_message):
@@ -983,6 +990,13 @@ class TeamsBot():
                 LOG.warning('Token is missing scopes (%s). Triggering re-authentication.', ', '.join(sorted(missing_scopes)))
             account.authenticate(scopes=scopes, redirect_uri='https://localhost')
         self.snoozebot.plugin.driver = account.teams()
+        try:
+            me = account.con.get('https://graph.microsoft.com/v1.0/me').json()
+            self.snoozebot.plugin.self_user_id = me.get('id', '')
+            self.snoozebot.plugin.self_user_name = me.get('displayName', '')
+            LOG.info('Authenticated Teams identity: %s (%s)', self.snoozebot.plugin.self_user_name, self.snoozebot.plugin.self_user_id)
+        except Exception as e:
+            LOG.warning('Could not fetch authenticated Teams identity: %s', e)
 
 def main():
     TeamsBot().snoozebot.plugin.serve()
