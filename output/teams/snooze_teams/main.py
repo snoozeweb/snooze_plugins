@@ -845,7 +845,21 @@ class TeamsBot():
         credentials = (client_id, client_secret)
         protocol = MSGraphProtocol(api_version='beta')
         account = Account(credentials, tenant_id=tenant_id, protocol=protocol)
-        if not account.is_authenticated:
+        expected_scopes = set(scopes)
+        missing_scopes = set(expected_scopes)
+        if account.is_authenticated:
+            try:
+                token_data = account.con.token_backend.get_access_token()
+                token_scopes = set((token_data.get('scope', '') or '').split())
+                missing_scopes = set(
+                    scope for scope in expected_scopes
+                    if scope != 'offline_access' and scope not in token_scopes and 'https://graph.microsoft.com/{}'.format(scope) not in token_scopes
+                )
+            except Exception as e:
+                LOG.warning('Could not inspect current token scopes: %s', e)
+        if (not account.is_authenticated) or missing_scopes:
+            if missing_scopes:
+                LOG.warning('Token is missing scopes (%s). Triggering re-authentication.', ', '.join(sorted(missing_scopes)))
             account.authenticate(scopes=scopes, redirect_uri='https://localhost')
         self.snoozebot.plugin.driver = account.teams()
 
