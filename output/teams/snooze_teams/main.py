@@ -837,7 +837,6 @@ class TeamsBot():
             'offline_access',
             'ChannelMessage.Send',
             'ChannelMessage.Read.All',
-            'Chat.Read',
             'Chat.ReadBasic',
             'Team.ReadBasic.All',
             'Channel.ReadBasic.All'

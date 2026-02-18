@@ -34,10 +34,12 @@ $ sudo systemctl start snooze-teams
 Recommended Microsoft Graph delegated permissions for polling + replies:
 * `ChannelMessage.Send`
 * `ChannelMessage.Read.All`
-* `Chat.Read`
 * `Chat.ReadBasic`
 * `Team.ReadBasic.All`
 * `Channel.ReadBasic.All`
+
+Optional (only if you also poll chat resources):
+* `Chat.Read`
 
 ## Create Action
 
