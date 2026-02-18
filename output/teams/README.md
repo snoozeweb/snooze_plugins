@@ -88,7 +88,6 @@ This plugin's configuration is in the following YAML file: `/etc/snooze/teamsbot
 * `debug` (Boolean, defaults to `false`): Show debug logs
 * `poll_interval_seconds` (Integer, defaults to `10`): Delay between each polling cycle
 * `poll_lookback_seconds` (Integer, defaults to `0`): Initial lookback window for startup checkpoint (with default `0`, only messages newer than startup are processed)
-* `ignore_self_messages` (Boolean, defaults to `true`): Ignore messages sent by the bot/application itself to avoid loops
 * `poll_resources` (List of strings, optional): Explicit resources to poll. Accepted forms:
   * Channel ID-like form (ex: `teams/{team-id}/channels/{channel-id}`)
   * Graph relative form (ex: `/teams/{team-id}/channels/{channel-id}/messages`)

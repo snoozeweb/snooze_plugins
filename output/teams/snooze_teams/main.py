@@ -407,17 +407,12 @@ class TeamsPlugin(SnoozeBotPlugin):
         self._channel_layout_cache = {}
         self.poll_interval_seconds = int(self.config.get('poll_interval_seconds', 10))
         self.poll_lookback_seconds = int(self.config.get('poll_lookback_seconds', 0))
-        self.ignore_self_messages = bool(self.config.get('ignore_self_messages', True))
         resources = self.config.get('poll_resources', [])
         if isinstance(resources, str):
             resources = [resources]
         self._poll_resources = set(resources)
         self._poll_resources_lock = threading.Lock()
         self._poller = None
-        self._sent_message_ids = []
-        self._sent_message_id_set = set()
-        self._sent_message_ids_limit = 4000
-        self._sent_message_lock = threading.Lock()
 
     def _normalize_channel_ref(self, channel_ref):
         if not channel_ref:
@@ -494,11 +489,12 @@ class TeamsPlugin(SnoozeBotPlugin):
             if channel_ref and group_id:
                 return 'https://graph.microsoft.com/beta/teams/{}/channels/{}'.format(group_id, channel_ref)
         if channel_id.startswith('https://graph.microsoft.com/'):
-            if channel_id.endswith('/messages'):
-                return channel_id[:-9]
-            return channel_id
+            normalized = self._normalize_channels_in_path(channel_id)
+            if normalized.endswith('/messages'):
+                return normalized[:-9]
+            return normalized
         if channel_id.startswith('teams/') or channel_id.startswith('/teams/'):
-            rel = channel_id.lstrip('/')
+            rel = self._normalize_channels_in_path(channel_id.lstrip('/'))
             if rel.endswith('/messages'):
                 rel = rel[:-9]
             return 'https://graph.microsoft.com/beta/{}'.format(rel)
@@ -528,7 +524,15 @@ class TeamsPlugin(SnoozeBotPlugin):
         return re.sub(r'\s+', ' ', text).strip()
 
     def _reply_to_html(self, text):
-        rendered = html.escape(text or '')
+        raw = text or ''
+        emoji_map = {
+            ':white_check_mark:': '✅',
+            ':x:': '❌',
+            ':warning:': '⚠️',
+        }
+        for shortcode, symbol in emoji_map.items():
+            raw = raw.replace(shortcode, symbol)
+        rendered = html.escape(raw)
         rendered = re.sub(r'\[\[(.*?)\]\]\((.*?)\)', r'<a href="\2">\1</a>', rendered)
         rendered = re.sub(r'\[(.*?)\]\((.*?)\)', r'<a href="\2">\1</a>', rendered)
         rendered = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', rendered)
@@ -539,11 +543,6 @@ class TeamsPlugin(SnoozeBotPlugin):
         body_content = graph_message.get('body', {}).get('content', '') or ''
         if TeamsPlugin.BOT_MARKER in body_content:
             return True
-        message_id = graph_message.get('id')
-        if message_id in self._sent_message_id_set:
-            return True
-        if not self.ignore_self_messages:
-            return False
         sender = graph_message.get('from', {})
         if sender.get('application'):
             return True
@@ -577,19 +576,6 @@ class TeamsPlugin(SnoozeBotPlugin):
             return
         layout_type = self.get_channel_layout(channel_id)
         self.send_message({'reply': response_text}, channel_id=channel_id, thread={'thread_id': thread_id}, layout_type=layout_type)
-
-    def remember_sent_message(self, payload):
-        message_id = (payload or {}).get('id')
-        if not message_id:
-            return
-        with self._sent_message_lock:
-            if message_id in self._sent_message_id_set:
-                return
-            self._sent_message_ids.append(message_id)
-            self._sent_message_id_set.add(message_id)
-            if len(self._sent_message_ids) > self._sent_message_ids_limit:
-                old = self._sent_message_ids.pop(0)
-                self._sent_message_id_set.discard(old)
 
     def start_polling(self):
         if self._poller:
@@ -640,9 +626,7 @@ class TeamsPlugin(SnoozeBotPlugin):
         for n in range(3):
             try:
                 resp = self.driver.con.post(url, data=data)
-                payload = resp.json()
-                self.remember_sent_message(payload)
-                return payload
+                return resp.json()
             except Exception as e:
                 LOG.exception(e)
                 time.sleep(1)
