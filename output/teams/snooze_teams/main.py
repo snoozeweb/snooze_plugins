@@ -410,11 +410,23 @@ class TeamsPlugin(SnoozeBotPlugin):
         resources = self.config.get('poll_resources', [])
         if isinstance(resources, str):
             resources = [resources]
-        self._poll_resources = set(resources)
+        self._poll_resources = set()
         self._poll_resources_lock = threading.Lock()
         self._poller = None
         self.self_user_id = ''
         self.self_user_name = ''
+        for resource in resources:
+            normalized = self.normalize_poll_resource(resource)
+            if normalized:
+                self._poll_resources.add(normalized)
+
+    def normalize_poll_resource(self, resource):
+        if not resource:
+            return ''
+        try:
+            return self.build_messages_url(resource)
+        except Exception:
+            return resource
 
     def _normalize_channel_ref(self, channel_ref):
         if not channel_ref:
@@ -434,8 +446,9 @@ class TeamsPlugin(SnoozeBotPlugin):
     def register_poll_resource(self, channel_id):
         if not channel_id:
             return
+        normalized = self.normalize_poll_resource(channel_id)
         with self._poll_resources_lock:
-            self._poll_resources.add(channel_id)
+            self._poll_resources.add(normalized)
 
     def get_poll_resources(self):
         with self._poll_resources_lock:
