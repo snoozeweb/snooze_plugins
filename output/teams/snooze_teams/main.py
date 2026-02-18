@@ -202,12 +202,21 @@ Example: *@{}* **snooze** 6h host = example_host""".format(display_name, self.bo
 any other message: *Comment an alert*
 
 Example: *@{}* **esc** severity = critical *Please check*""".format(display_name, self.bot_name)
-        aggregates = self.client.record(['OR', ['IN', ['IN', thread, 'content.threads.root_id'], 'snooze_webhook_responses'], ['IN', ['IN', thread, 'content.multithreads.root_id'], 'snooze_webhook_responses']])
+        aggregates = self.client.record([
+            'OR',
+            ['IN', ['IN', thread, 'content.threads.root_id'], 'snooze_webhook_responses'],
+            ['IN', ['IN', thread, 'content.threads.thread_id'], 'snooze_webhook_responses'],
+            ['IN', ['IN', thread, 'content.multithreads.root_id'], 'snooze_webhook_responses'],
+            ['IN', ['IN', thread, 'content.multithreads.thread_id'], 'snooze_webhook_responses']
+        ])
         if len(aggregates) == 0:
             return ':x: `{}`:Cannot find the corresponding alert! (command: `{}`)'.format(display_name, original_message)
         record = aggregates[0]
         action_name = next(action_result.get('action_name') for action_result in record.get('snooze_webhook_responses', [])
-            if thread in list(map(lambda x: x.get('root_id'), action_result.get('content', {}).get('threads', []) + action_result.get('content', {}).get('multithreads', [])))) or 'SnoozeBot'
+            if thread in list(map(
+                lambda x: x.get('root_id') or x.get('thread_id'),
+                action_result.get('content', {}).get('threads', []) + action_result.get('content', {}).get('multithreads', [])
+            ))) or 'SnoozeBot'
         user = '{} via {}'.format(display_name, action_name)
         if self.snooze_url:
             link = '[[Link]]({}/web/?#/record?tab=All&s=hash%3D{})'.format(self.snooze_url, record['hash'])
@@ -405,6 +414,22 @@ class TeamsPlugin(SnoozeBotPlugin):
         self._poll_resources = set(resources)
         self._poll_resources_lock = threading.Lock()
         self._poller = None
+        self._sent_message_ids = []
+        self._sent_message_id_set = set()
+        self._sent_message_ids_limit = 4000
+        self._sent_message_lock = threading.Lock()
+
+    def _normalize_channel_ref(self, channel_ref):
+        if not channel_ref:
+            return channel_ref
+        if '@thread.tacv2' in channel_ref:
+            return channel_ref
+        return '{}@thread.tacv2'.format(channel_ref)
+
+    def _normalize_channels_in_path(self, path):
+        def add_suffix(match):
+            return '/channels/{}'.format(self._normalize_channel_ref(match.group(1)))
+        return re.sub(r'/channels/([^/\?]+)', add_suffix, path)
 
     def on_alert(self, request, medias):
         response = self.process_alert(request, medias)
@@ -426,26 +451,28 @@ class TeamsPlugin(SnoozeBotPlugin):
             channel_id = unquote(path_parts[3]) if len(path_parts) > 3 else ''
             group_id = parse_qs(parsed.query).get('groupId', [''])[0]
             if channel_id and group_id:
-                return 'https://graph.microsoft.com/beta/teams/{}/channels/{}/messages'.format(group_id, channel_id)
+                return 'https://graph.microsoft.com/beta/teams/{}/channels/{}/messages'.format(group_id, self._normalize_channel_ref(channel_id))
         if resource.startswith('https://graph.microsoft.com/'):
-            return resource
+            return self._normalize_channels_in_path(resource)
         if resource.startswith('/'):
-            return 'https://graph.microsoft.com/beta{}'.format(resource)
+            return 'https://graph.microsoft.com/beta{}'.format(self._normalize_channels_in_path(resource))
         if resource.endswith('/messages'):
-            return 'https://graph.microsoft.com/beta/{}'.format(resource)
+            return 'https://graph.microsoft.com/beta/{}'.format(self._normalize_channels_in_path(resource))
         if resource.endswith('@thread.tacv2'):
             return 'https://graph.microsoft.com/beta/{}/messages'.format(resource)
+        if resource.startswith('teams/'):
+            return 'https://graph.microsoft.com/beta/{}/messages'.format(self._normalize_channels_in_path(resource))
         return 'https://graph.microsoft.com/beta/{}@thread.tacv2/messages'.format(resource)
 
     def build_post_messages_url(self, channel_id, thread_id=''):
         if channel_id.startswith('https://teams.microsoft.com/l/channel/'):
             base_url = self.build_messages_url(channel_id)
         elif channel_id.startswith('https://graph.microsoft.com/'):
-            base_url = channel_id
+            base_url = self._normalize_channels_in_path(channel_id)
             if not base_url.endswith('/messages'):
                 base_url = '{}/messages'.format(base_url.rstrip('/'))
         elif channel_id.startswith('teams/') or channel_id.startswith('/teams/'):
-            rel = channel_id.lstrip('/')
+            rel = self._normalize_channels_in_path(channel_id.lstrip('/'))
             if rel.endswith('/messages'):
                 base_url = 'https://graph.microsoft.com/beta/{}'.format(rel)
             else:
@@ -512,6 +539,9 @@ class TeamsPlugin(SnoozeBotPlugin):
         body_content = graph_message.get('body', {}).get('content', '') or ''
         if TeamsPlugin.BOT_MARKER in body_content:
             return True
+        message_id = graph_message.get('id')
+        if message_id in self._sent_message_id_set:
+            return True
         if not self.ignore_self_messages:
             return False
         sender = graph_message.get('from', {})
@@ -547,6 +577,19 @@ class TeamsPlugin(SnoozeBotPlugin):
             return
         layout_type = self.get_channel_layout(channel_id)
         self.send_message({'reply': response_text}, channel_id=channel_id, thread={'thread_id': thread_id}, layout_type=layout_type)
+
+    def remember_sent_message(self, payload):
+        message_id = (payload or {}).get('id')
+        if not message_id:
+            return
+        with self._sent_message_lock:
+            if message_id in self._sent_message_id_set:
+                return
+            self._sent_message_ids.append(message_id)
+            self._sent_message_id_set.add(message_id)
+            if len(self._sent_message_ids) > self._sent_message_ids_limit:
+                old = self._sent_message_ids.pop(0)
+                self._sent_message_id_set.discard(old)
 
     def start_polling(self):
         if self._poller:
@@ -597,7 +640,9 @@ class TeamsPlugin(SnoozeBotPlugin):
         for n in range(3):
             try:
                 resp = self.driver.con.post(url, data=data)
-                return resp.json()
+                payload = resp.json()
+                self.remember_sent_message(payload)
+                return payload
             except Exception as e:
                 LOG.exception(e)
                 time.sleep(1)
