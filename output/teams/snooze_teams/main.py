@@ -391,11 +391,13 @@ class AlertRoute():
 
 class TeamsPlugin(SnoozeBotPlugin):
 
+    BOT_MARKER = '<!-- snooze-bot -->'
+
     def __init__(self, config):
         super().__init__(config)
         self._channel_layout_cache = {}
         self.poll_interval_seconds = int(self.config.get('poll_interval_seconds', 10))
-        self.poll_lookback_seconds = int(self.config.get('poll_lookback_seconds', 120))
+        self.poll_lookback_seconds = int(self.config.get('poll_lookback_seconds', 0))
         self.ignore_self_messages = bool(self.config.get('ignore_self_messages', True))
         resources = self.config.get('poll_resources', [])
         if isinstance(resources, str):
@@ -498,7 +500,18 @@ class TeamsPlugin(SnoozeBotPlugin):
         text = html.unescape(text)
         return re.sub(r'\s+', ' ', text).strip()
 
+    def _reply_to_html(self, text):
+        rendered = html.escape(text or '')
+        rendered = re.sub(r'\[\[(.*?)\]\]\((.*?)\)', r'<a href="\2">\1</a>', rendered)
+        rendered = re.sub(r'\[(.*?)\]\((.*?)\)', r'<a href="\2">\1</a>', rendered)
+        rendered = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', rendered)
+        rendered = re.sub(r'`([^`]+)`', r'<code>\1</code>', rendered)
+        return rendered.replace('\n', '<br>')
+
     def is_self_message(self, graph_message):
+        body_content = graph_message.get('body', {}).get('content', '') or ''
+        if TeamsPlugin.BOT_MARKER in body_content:
+            return True
         if not self.ignore_self_messages:
             return False
         sender = graph_message.get('from', {})
@@ -615,9 +628,12 @@ class TeamsPlugin(SnoozeBotPlugin):
             if one_message.get('from_msg'):
                 from_message += ': {}'.format(one_message.get('from_msg'))
         if not 'messages' in message:
-            simple_message = from_message + '<br>'
+            simple_message = TeamsPlugin.BOT_MARKER
+            if from_message:
+                simple_message += from_message + '<br>'
             if message.get('reply'):
-                simple_message += SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format), message.get('reply'))
+                reply_text = SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format), message.get('reply'))
+                simple_message += self._reply_to_html(reply_text)
             else:
                 record = message['record']
                 timestamp = SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format), record.get('timestamp', str(datetime.now().astimezone())))
@@ -665,7 +681,7 @@ class TeamsPlugin(SnoozeBotPlugin):
         card = {
             'body': {
                 'contentType': 'html',
-                'content': '<attachment id="{}"></attachment>'.format(uid)
+                'content': '<attachment id="{}"></attachment>{}'.format(uid, TeamsPlugin.BOT_MARKER)
             },
             'attachments': [{
                 'id': uid,
@@ -731,11 +747,12 @@ class TeamsPlugin(SnoozeBotPlugin):
 
         if not 'messages' in message:
             # Single re-escalation message (reply to existing thread)
-            simple_message = ''
+            simple_message = TeamsPlugin.BOT_MARKER
             if from_message:
-                simple_message = from_message + '<br>'
+                simple_message += from_message + '<br>'
             if message.get('reply'):
-                simple_message += SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format), message.get('reply'))
+                reply_text = SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format), message.get('reply'))
+                simple_message += self._reply_to_html(reply_text)
             else:
                 record = message['record']
                 timestamp = SnoozeBotPlugin.date_regex.sub(lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format), record.get('timestamp', str(datetime.now().astimezone())))
@@ -791,7 +808,7 @@ class TeamsPlugin(SnoozeBotPlugin):
         if message.get('footer'):
             parts.append('Check all alerts in <a href="{}/web">Snoozeweb</a>'.format(website))
 
-        return {'body': {'content': '<br>'.join(parts), 'contentType': 'html'}}
+        return {'body': {'content': '{}<br>{}'.format(TeamsPlugin.BOT_MARKER, '<br>'.join(parts)), 'contentType': 'html'}}
 
 
 class TeamsPoller(threading.Thread):
