@@ -97,9 +97,31 @@ class JiraClient:
 
         payload = {'fields': fields}
         LOG.debug("Creating JIRA issue: %s", payload)
-        result = self._request('POST', '/issue', json=payload)
+        try:
+            result = self._request('POST', '/issue', json=payload)
+        except HTTPError as e:
+            if self._priority_error_requires_string(e) and priority:
+                # Some Jira instances require priority as a string instead of {"name": ...}.
+                fallback_payload = {'fields': dict(fields)}
+                fallback_payload['fields']['priority'] = priority
+                LOG.info("Retrying JIRA issue creation with string priority format")
+                result = self._request('POST', '/issue', json=fallback_payload)
+            else:
+                raise
         LOG.info("Created JIRA issue: %s", result.get('key'))
         return result
+
+    @staticmethod
+    def _priority_error_requires_string(error):
+        response = getattr(error, 'response', None)
+        if response is None:
+            return False
+        try:
+            errors = (response.json() or {}).get('errors', {})
+        except Exception:
+            return False
+        priority_error = str(errors.get('priority', '')).casefold()
+        return bool(priority_error and ('string' in priority_error or 'cha' in priority_error))
 
     def add_comment(self, issue_key, comment_text):
         """Add a comment to an existing JIRA issue.

@@ -1,6 +1,7 @@
 import json
 import pytest
 from unittest.mock import patch, MagicMock
+from requests import HTTPError
 
 from snooze_jira.jira_client import JiraClient
 
@@ -123,6 +124,31 @@ class TestJiraClient:
         )
         payload = mock_request.call_args[1]['json']
         assert payload['fields']['components'] == [{'name': 'Infrastructure'}]
+
+    @patch.object(JiraClient, '_request')
+    def test_create_issue_priority_string_fallback(self, mock_request):
+        error_response = MagicMock()
+        error_response.json.return_value = {
+            'errorMessages': [],
+            'errors': {'priority': 'Specify Priority (name) in string format'},
+        }
+        http_error = HTTPError(response=error_response)
+        mock_request.side_effect = [http_error, {'id': '10003', 'key': 'OPS-44'}]
+
+        result = self.client.create_issue(
+            project_key='OPS',
+            issue_type='Task',
+            summary='Fallback priority format',
+            description_adf=JiraClient._text_to_adf('Test description'),
+            priority='High',
+        )
+
+        assert result['key'] == 'OPS-44'
+        assert mock_request.call_count == 2
+        first_payload = mock_request.call_args_list[0][1]['json']
+        second_payload = mock_request.call_args_list[1][1]['json']
+        assert first_payload['fields']['priority'] == {'name': 'High'}
+        assert second_payload['fields']['priority'] == 'High'
 
     @patch.object(JiraClient, '_request')
     def test_add_comment(self, mock_request):
@@ -511,7 +537,7 @@ class TestJiraPlugin:
 
         plugin.process_records(req, medias)
         call_kwargs = mock_create.call_args[1]
-        assert call_kwargs['priority'] == 'Highest'
+        assert call_kwargs['priority'] == 'High'
 
     @patch.object(JiraClient, 'create_issue')
     def test_priority_mapping_info(self, mock_create):
@@ -575,7 +601,7 @@ class TestJiraPlugin:
 
         plugin.process_records(req, medias)
         call_kwargs = mock_create.call_args[1]
-        assert call_kwargs['priority'] == 'Low'  # payload override, not 'Highest'
+        assert call_kwargs['priority'] == 'Low'
 
     @patch.object(JiraClient, 'transition_issue')
     @patch.object(JiraClient, 'get_transitions')

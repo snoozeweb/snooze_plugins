@@ -71,8 +71,8 @@ class JiraPlugin:
 
         # Priority mapping: maps Snooze severity to JIRA priority name
         self.priority_mapping = self.config.get('priority_mapping', {
-            'critical': 'Highest',
-            'major': 'High',
+            'emergency': 'Critical',
+            'critical': 'High',
             'warning': 'Medium',
             'minor': 'Low',
             'info': 'Lowest',

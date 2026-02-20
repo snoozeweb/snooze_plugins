@@ -106,8 +106,8 @@ project_key: OPS
 issue_type: Task
 priority: Medium
 priority_mapping:
-  critical: "Highest"
-  major: "High"
+  emergency: "Critical"
+  critical: "High"
   warning: "Medium"
   minor: "Low"
   info: "Lowest"
@@ -156,8 +156,8 @@ The `priority_mapping` configuration maps Snooze alert severities to JIRA priori
 
 | Snooze Severity | JIRA Priority |
 |---|---|
-| `critical` | `Highest` |
-| `major` | `High` |
+| `emergency` | `High` |
+| `critical` | `High` |
 | `warning` | `Medium` |
 | `minor` | `Low` |
 | `info` | `Lowest` |
