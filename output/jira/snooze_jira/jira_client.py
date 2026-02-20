@@ -3,6 +3,7 @@ import time
 from base64 import b64encode
 
 import requests
+from requests import HTTPError
 
 LOG = logging.getLogger("snooze.jira")
 
@@ -31,6 +32,32 @@ class JiraClient:
                 if resp.status_code == 204 or not resp.content:
                     return {}
                 return resp.json()
+            except HTTPError as e:
+                response = e.response
+                status = getattr(response, 'status_code', 'unknown')
+                body = (getattr(response, 'text', '') or '').strip()
+                jira_errors = ''
+                try:
+                    error_json = response.json() if response is not None else {}
+                    error_messages = error_json.get('errorMessages', [])
+                    field_errors = error_json.get('errors', {})
+                    if error_messages or field_errors:
+                        jira_errors = f" errorMessages={error_messages} fieldErrors={field_errors}"
+                except Exception:
+                    pass
+                LOG.warning(
+                    "JIRA API request failed (attempt %d/%d): HTTP %s %s%s body=%s",
+                    attempt + 1,
+                    retries,
+                    status,
+                    method,
+                    jira_errors,
+                    body,
+                )
+                if attempt < retries - 1:
+                    time.sleep(1)
+                else:
+                    raise
             except Exception as e:
                 LOG.warning("JIRA API request failed (attempt %d/%d): %s", attempt + 1, retries, e)
                 if attempt < retries - 1:
