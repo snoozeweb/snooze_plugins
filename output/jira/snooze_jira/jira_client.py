@@ -201,7 +201,7 @@ class JiraClient:
         }
         if fields:
             payload['fields'] = fields
-        result = self._request('POST', '/search', json=payload)
+        result = self._request('POST', '/search/jql', json=payload)
         return result.get('issues', [])
 
     def find_user_by_email(self, email):
