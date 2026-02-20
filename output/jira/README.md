@@ -89,6 +89,10 @@ This plugin's configuration is in the following YAML file: `/etc/snooze/jira.yam
 | `reopen_closed` | Boolean | `false` | When true, re-escalation on a closed/done JIRA ticket will reopen it |
 | `reopen_status_name` | String | `To Do` | Target status name when reopening a closed ticket (e.g. `To Do`, `Open`, `Backlog`) |
 | `initial_status` | String | | If set, newly created issues are transitioned to this status after creation (e.g. `In Progress`, `Open`). Can be overridden per-alert in payload |
+| `alert_hash_custom_field` | String | | JIRA custom field ID (e.g. `customfield_10500`) to store the Snooze alert URL. This enables the poller to track tickets and sync status back to Snooze. The field should be a simple text field |
+| `poll_enabled` | Boolean | `true` | Enable background polling to close Snooze alerts when JIRA tickets are resolved. Requires `alert_hash_custom_field` to be set (automatically disabled if not configured) |
+| `poll_interval` | Integer | `300` | Seconds between poll cycles |
+| `poll_jql` | String | auto-generated | Custom JQL query for the poller. If not set, defaults to `cf[XXXXX] is not EMPTY AND statusCategory != Done` based on `alert_hash_custom_field` |
 | `ssl_verify` | Boolean | `true` | Use SSL verification for JIRA API requests |
 | `listening_address` | String | `0.0.0.0` | Address to listen to |
 | `listening_port` | Integer | `5203` | Port to listen to |
@@ -133,6 +137,8 @@ reopen_closed: true
 reopen_status_name: "To Do"
 initial_status: "In Progress"
 ssl_verify: true
+alert_hash_custom_field: "customfield_10500"
+poll_interval: 300
 listening_address: 0.0.0.0
 listening_port: 5203
 snooze_url: https://snooze.mycompany.com
@@ -147,6 +153,7 @@ debug: false
 3. **Re-escalation**: If the alert was already sent previously (tracked via `Inject Response`), a comment is added to the existing JIRA ticket instead of creating a duplicate
 4. **Reopen closed tickets** (optional): If `reopen_closed: true` is set and the existing ticket is in a done/closed status, the plugin will automatically transition it back to the configured `reopen_status_name` (default: `To Do`)
 5. **Response injection**: The JIRA issue key is returned to SnoozeWeb and stored in the record's `snooze_webhook_responses`, enabling deduplication on subsequent triggers
+6. **Status sync (poller)**: A background thread periodically queries JIRA for open tickets with the `alert_hash_custom_field` set. When a ticket is resolved/closed in JIRA, the plugin automatically closes the corresponding Snooze alert via the Snooze API
 
 ## Priority Mapping
 
@@ -250,3 +257,23 @@ This can also be overridden per-alert in the webhook payload:
   "alert": {{ __self__ | tojson() }}
 }
 ```
+
+## Bidirectional Status Sync (Poller)
+
+When `alert_hash_custom_field` is configured, the plugin stores a Snooze URL in the specified JIRA custom field on each created ticket. A background poller thread uses this field to track open tickets and detect when they are resolved in JIRA.
+
+**How it works:**
+1. On issue creation, the plugin writes the Snooze alert URL (e.g. `https://snooze.example.com/web/?#/record?tab=All&s=hash%3Dabc123`) into the configured custom field
+2. The poller queries JIRA every `poll_interval` seconds for open issues that have this field set
+3. It maintains an in-memory set of tracked open issues
+4. When a previously-tracked issue disappears from the open results (i.e. it was resolved/closed in JIRA), the poller extracts the alert hash from the URL and calls the Snooze API to close the corresponding alert
+
+**Setup:**
+1. Create a custom text field in your JIRA project (Admin > Issues > Custom fields > Create field > Text Field (single line))
+2. Note the field ID (e.g. `customfield_10500`) — you can find it in the JIRA REST API or field configuration
+3. Add it to your `jira.yaml`:
+   ```yaml
+   alert_hash_custom_field: "customfield_10500"
+   ```
+
+The poller is enabled by default but only starts if `alert_hash_custom_field` is set. You can disable it explicitly with `poll_enabled: false`.

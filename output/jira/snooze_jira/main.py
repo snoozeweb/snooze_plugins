@@ -1,6 +1,8 @@
 import yaml
 import os
 import logging
+import re
+import threading
 import falcon
 from datetime import datetime
 from pathlib import Path
@@ -89,7 +91,15 @@ class JiraPlugin:
 
         # Initial status: optionally transition newly created issues to a specific status
         self.initial_status = self.config.get('initial_status', '')
-        self.issue_metadata_property_key = self.config.get('issue_metadata_property_key', 'snooze.metadata')
+
+        # Custom field to store the Snooze alert URL on the JIRA issue (e.g. 'customfield_10500')
+        self.alert_hash_custom_field = self.config.get('alert_hash_custom_field', '')
+
+        # Polling configuration for bidirectional status sync
+        # Enabled by default, but requires alert_hash_custom_field to be set
+        self.poll_enabled = self.config.get('poll_enabled', True)
+        self.poll_interval = self.config.get('poll_interval', 300)
+        self.poll_jql = self.config.get('poll_jql', '')
 
     def process_alert(self, request, medias):
         """Entry point for processing alert webhooks."""
@@ -204,6 +214,11 @@ class JiraPlugin:
                         combined_extra['reporter'] = user_field
                 combined_extra.update(merged_custom_fields)
 
+                # Store the Snooze alert URL in the configured custom field
+                if self.alert_hash_custom_field and record_hash:
+                    snooze_link = f"{self.snooze_url}/web/?#/record?tab=All&s=hash%3D{record_hash}"
+                    combined_extra[self.alert_hash_custom_field] = snooze_link
+
                 try:
                     result = self.jira.create_issue(
                         project_key=project_key,
@@ -216,27 +231,6 @@ class JiraPlugin:
                     )
                     issue_key = result.get('key', '')
                     LOG.info("Created JIRA issue %s for record %s", issue_key, record_hash)
-
-                    # Persist Snooze-specific metadata directly on the issue.
-                    if issue_key and self.issue_metadata_property_key:
-                        metadata_payload = {
-                            'created_by_plugin': 'snooze_jira',
-                            'alert_hash': record_hash,
-                            'alert_uid': record.get('uid', ''),
-                        }
-                        try:
-                            self.jira.set_issue_property(
-                                issue_key,
-                                self.issue_metadata_property_key,
-                                metadata_payload,
-                            )
-                        except Exception as e:
-                            LOG.warning(
-                                "Failed to set issue metadata property '%s' on %s: %s",
-                                self.issue_metadata_property_key,
-                                issue_key,
-                                e,
-                            )
 
                     # Transition to initial status if configured
                     initial_status = req_media.get('initial_status', self.initial_status)
@@ -272,6 +266,26 @@ class JiraPlugin:
                 if issue_key:
                     return issue_key
         return None
+
+    @staticmethod
+    def _extract_hash_from_field(value):
+        """Extract the alert hash from a custom field value.
+
+        The field may contain a Snooze URL (e.g. https://snooze.example.com/web/?#/record?tab=All&s=hash%3Dabc123)
+        or a plain hash string.
+
+        Args:
+            value: The custom field value string
+
+        Returns:
+            The extracted alert hash, or the original value if no URL pattern is found
+        """
+        if not value:
+            return ''
+        match = re.search(r'hash(?:%3D|=)([^&\s]+)', value)
+        if match:
+            return match.group(1)
+        return value
 
     def _reopen_issue_if_closed(self, issue_key):
         """Reopen a JIRA issue if it is in a done/closed status category.
@@ -452,8 +466,89 @@ class JiraPlugin:
 
         return '\n'.join(parts)
 
+    def _start_poller(self):
+        """Start the background JIRA poller thread if enabled."""
+        if not self.poll_enabled:
+            return
+        if not self.alert_hash_custom_field:
+            LOG.error("poll_enabled is True but alert_hash_custom_field is not configured, skipping poller")
+            return
+        self._tracked_issues = {}  # {issue_key: alert_hash}
+        self._poll_stop = threading.Event()
+        self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._poll_thread.start()
+        LOG.info("JIRA poller started (interval=%ds)", self.poll_interval)
+
+    def _poll_loop(self):
+        """Background loop that polls JIRA for ticket status changes."""
+        while not self._poll_stop.wait(self.poll_interval):
+            try:
+                self._poll_cycle()
+            except Exception as e:
+                LOG.exception("JIRA poll cycle failed: %s", e)
+
+    def _poll_cycle(self):
+        """Single poll cycle: find open issues, detect newly-closed ones, update Snooze."""
+        # Build JQL to find open issues with the alert hash field set
+        if self.poll_jql:
+            jql = self.poll_jql
+        else:
+            # Extract numeric field ID from customfield_XXXXX for cf[] syntax
+            field_id = self.alert_hash_custom_field
+            if field_id.startswith('customfield_'):
+                cf_num = field_id[len('customfield_'):]
+                jql = f'cf[{cf_num}] is not EMPTY AND statusCategory != Done'
+            else:
+                jql = f'"{field_id}" is not EMPTY AND statusCategory != Done'
+
+        fields = [self.alert_hash_custom_field, 'status']
+        issues = self.jira.search_issues(jql, fields=fields)
+
+        current_open = {}
+        for issue in issues:
+            issue_key = issue.get('key', '')
+            field_value = issue.get('fields', {}).get(self.alert_hash_custom_field, '')
+            alert_hash = self._extract_hash_from_field(field_value)
+            if issue_key and alert_hash:
+                current_open[issue_key] = alert_hash
+
+        LOG.debug("Poll cycle: %d open issues with alert hash field", len(current_open))
+
+        # Detect issues that were tracked but are no longer open -> closed in JIRA
+        closed_keys = set(self._tracked_issues.keys()) - set(current_open.keys())
+        for issue_key in closed_keys:
+            alert_hash = self._tracked_issues[issue_key]
+            LOG.info("JIRA issue %s no longer open, closing Snooze alert (hash=%s)", issue_key, alert_hash)
+            self._close_snooze_alert(alert_hash, issue_key)
+
+        # Update tracked set to the current open issues
+        self._tracked_issues = current_open
+
+    def _close_snooze_alert(self, alert_hash, issue_key):
+        """Close the Snooze alert corresponding to a resolved JIRA ticket."""
+        try:
+            records = self.client.record(['=', 'hash', alert_hash])
+            if not records:
+                LOG.warning("No Snooze record found for hash '%s' (JIRA issue %s)", alert_hash, issue_key)
+                return
+            for record in records:
+                uid = record.get('uid')
+                if not uid:
+                    continue
+                self.client.comment_batch([{
+                    'type': 'close',
+                    'record_uid': uid,
+                    'name': 'jira',
+                    'method': 'jira',
+                    'message': f'Closed: JIRA ticket {issue_key} resolved',
+                }])
+                LOG.info("Closed Snooze alert uid=%s (hash=%s) due to JIRA %s", uid, alert_hash, issue_key)
+        except Exception as e:
+            LOG.exception("Failed to close Snooze alert for hash '%s': %s", alert_hash, e)
+
     def serve(self):
         """Start the Falcon + Waitress HTTP server."""
+        self._start_poller()
         self.app = falcon.App()
         self.app.add_route('/alert', AlertRoute(self))
         wsgi_options = Adjustments(host=self.address, port=self.port)

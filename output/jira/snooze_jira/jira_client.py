@@ -184,18 +184,25 @@ class JiraClient:
         result = self._request('GET', f'/issue/{issue_key}/transitions')
         return result.get('transitions', [])
 
-    def set_issue_property(self, issue_key, property_key, value):
-        """Set an issue property value on a JIRA issue.
+    def search_issues(self, jql, fields=None, max_results=50):
+        """Search for issues using JQL.
 
         Args:
-            issue_key: The issue key (e.g. 'OPS-123')
-            property_key: Property key name (e.g. 'snooze.metadata')
-            value: JSON-serializable dict or value to store
+            jql: JQL query string
+            fields: List of field names to return (default: all navigable fields)
+            max_results: Maximum number of results (default 50)
 
         Returns:
-            dict response from JIRA (usually empty on success)
+            list of issue dicts
         """
-        return self._request('PUT', f'/issue/{issue_key}/properties/{property_key}', json=value)
+        payload = {
+            'jql': jql,
+            'maxResults': max_results,
+        }
+        if fields:
+            payload['fields'] = fields
+        result = self._request('POST', '/search', json=payload)
+        return result.get('issues', [])
 
     def find_user_by_email(self, email):
         """Look up a JIRA user's accountId by email address.

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "snooze_jira"
-version = "0.5.3"
+version = "0.6.0"
 description = "JIRA ticket creation output plugin for SnoozeWeb"
 authors = [
     "Florian Dematraz <florian.dematraz@snoozeweb.net>",

@@ -200,15 +200,26 @@ class TestJiraClient:
         mock_request.assert_called_once_with('GET', '/issue/OPS-42/transitions')
 
     @patch.object(JiraClient, '_request')
-    def test_set_issue_property(self, mock_request):
-        mock_request.return_value = {}
-        payload = {'created_by_plugin': 'snooze_jira', 'alert_hash': 'abc123'}
-        self.client.set_issue_property('OPS-42', 'snooze.metadata', payload)
-        mock_request.assert_called_once_with(
-            'PUT',
-            '/issue/OPS-42/properties/snooze.metadata',
-            json=payload,
-        )
+    def test_search_issues(self, mock_request):
+        mock_request.return_value = {
+            'issues': [
+                {'key': 'OPS-1', 'fields': {'summary': 'Test', 'customfield_10500': 'hash1'}},
+                {'key': 'OPS-2', 'fields': {'summary': 'Test 2', 'customfield_10500': 'hash2'}},
+            ],
+        }
+        result = self.client.search_issues('project = OPS', fields=['summary', 'customfield_10500'])
+        assert len(result) == 2
+        assert result[0]['key'] == 'OPS-1'
+        mock_request.assert_called_once()
+        payload = mock_request.call_args[1]['json']
+        assert payload['jql'] == 'project = OPS'
+        assert payload['fields'] == ['summary', 'customfield_10500']
+
+    @patch.object(JiraClient, '_request')
+    def test_search_issues_empty(self, mock_request):
+        mock_request.return_value = {'issues': []}
+        result = self.client.search_issues('project = OPS AND status = Done')
+        assert result == []
 
     def test_find_user_by_email_single_result(self):
         mock_resp = MagicMock()
@@ -433,12 +444,10 @@ class TestJiraPlugin:
         assert result['abc123']['issue_key'] == 'OPS-42'
         mock_create.assert_called_once()
 
-    @patch.object(JiraClient, 'set_issue_property')
     @patch.object(JiraClient, 'create_issue')
-    def test_process_records_sets_snooze_metadata(self, mock_create, mock_set_property):
-        plugin = self._make_plugin()
+    def test_process_records_sets_alert_hash_custom_field(self, mock_create):
+        plugin = self._make_plugin({'alert_hash_custom_field': 'customfield_10500'})
         mock_create.return_value = {'id': '10001', 'key': 'OPS-42'}
-        mock_set_property.return_value = {}
 
         req = MagicMock()
         req.params = {'snooze_action_name': 'jira_action'}
@@ -457,15 +466,35 @@ class TestJiraPlugin:
 
         plugin.process_records(req, medias)
 
-        mock_set_property.assert_called_once_with(
-            'OPS-42',
-            'snooze.metadata',
-            {
-                'created_by_plugin': 'snooze_jira',
-                'alert_hash': 'abc123',
-                'alert_uid': 'uid-123',
+        call_kwargs = mock_create.call_args[1]
+        field_value = call_kwargs['extra_fields']['customfield_10500']
+        # Should be a Snooze URL containing the hash
+        assert 'snooze.example.com' in field_value
+        assert 'hash%3Dabc123' in field_value
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_process_records_no_custom_field_when_not_configured(self, mock_create):
+        plugin = self._make_plugin()  # no alert_hash_custom_field
+        mock_create.return_value = {'id': '10001', 'key': 'OPS-42'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'alert': {
+                'hash': 'abc123',
+                'host': 'web01',
+                'severity': 'critical',
+                'message': 'HTTP down',
             },
-        )
+        }]
+
+        plugin.process_records(req, medias)
+
+        call_kwargs = mock_create.call_args[1]
+        # No custom field key set, so extra_fields should not contain any customfield
+        for key in call_kwargs['extra_fields']:
+            assert not key.startswith('customfield_')
 
     @patch.object(JiraClient, 'add_comment')
     def test_process_records_existing_issue(self, mock_comment):
@@ -971,3 +1000,150 @@ class TestJiraPlugin:
         plugin.process_records(req, medias)
         mock_create.assert_called_once()
         mock_get_trans.assert_not_called()
+
+
+class TestJiraPoller:
+    """Tests for the background JIRA polling logic."""
+
+    def _make_plugin(self, config=None):
+        from snooze_jira.main import JiraPlugin
+        default_config = {
+            'jira_url': 'https://test.atlassian.net',
+            'jira_email': 'test@example.com',
+            'jira_api_token': 'test-token',
+            'project_key': 'OPS',
+            'snooze_url': 'https://snooze.example.com',
+            'alert_hash_custom_field': 'customfield_10500',
+            'poll_enabled': True,
+            'poll_interval': 60,
+        }
+        if config:
+            default_config.update(config)
+        with patch('snooze_jira.main.Snooze'):
+            plugin = JiraPlugin(default_config)
+        # Initialize tracked issues dict (normally done by _start_poller)
+        plugin._tracked_issues = {}
+        return plugin
+
+    @patch.object(JiraClient, 'search_issues')
+    def test_poll_cycle_populates_tracked_issues(self, mock_search):
+        plugin = self._make_plugin()
+        mock_search.return_value = [
+            {'key': 'OPS-1', 'fields': {'customfield_10500': 'https://snooze.example.com/web/?#/record?tab=All&s=hash%3Dhash_a', 'status': {'name': 'Open'}}},
+            {'key': 'OPS-2', 'fields': {'customfield_10500': 'https://snooze.example.com/web/?#/record?tab=All&s=hash%3Dhash_b', 'status': {'name': 'In Progress'}}},
+        ]
+
+        plugin._poll_cycle()
+
+        assert plugin._tracked_issues == {'OPS-1': 'hash_a', 'OPS-2': 'hash_b'}
+        mock_search.assert_called_once()
+
+    @patch.object(JiraClient, 'search_issues')
+    def test_poll_cycle_detects_closed_issues(self, mock_search):
+        plugin = self._make_plugin()
+        # Simulate previous cycle had two open issues
+        plugin._tracked_issues = {'OPS-1': 'hash_a', 'OPS-2': 'hash_b'}
+
+        # Now only OPS-1 is open (OPS-2 was closed in JIRA)
+        mock_search.return_value = [
+            {'key': 'OPS-1', 'fields': {'customfield_10500': 'https://snooze.example.com/web/?#/record?tab=All&s=hash%3Dhash_a', 'status': {'name': 'Open'}}},
+        ]
+
+        # Mock the Snooze client to verify close is called
+        plugin.client.record = MagicMock(return_value=[{'uid': 'uid-b'}])
+        plugin.client.comment_batch = MagicMock()
+
+        plugin._poll_cycle()
+
+        # OPS-2 should have been detected as closed
+        plugin.client.record.assert_called_once_with(['=', 'hash', 'hash_b'])
+        plugin.client.comment_batch.assert_called_once_with([{
+            'type': 'close',
+            'record_uid': 'uid-b',
+            'name': 'jira',
+            'method': 'jira',
+            'message': 'Closed: JIRA ticket OPS-2 resolved',
+        }])
+
+        # Tracked issues should only contain OPS-1 now
+        assert plugin._tracked_issues == {'OPS-1': 'hash_a'}
+
+    @patch.object(JiraClient, 'search_issues')
+    def test_poll_cycle_no_close_when_all_still_open(self, mock_search):
+        plugin = self._make_plugin()
+        plugin._tracked_issues = {'OPS-1': 'hash_a'}
+
+        mock_search.return_value = [
+            {'key': 'OPS-1', 'fields': {'customfield_10500': 'https://snooze.example.com/web/?#/record?tab=All&s=hash%3Dhash_a', 'status': {'name': 'Open'}}},
+        ]
+
+        plugin.client.record = MagicMock()
+        plugin.client.comment_batch = MagicMock()
+
+        plugin._poll_cycle()
+
+        plugin.client.record.assert_not_called()
+        plugin.client.comment_batch.assert_not_called()
+        assert plugin._tracked_issues == {'OPS-1': 'hash_a'}
+
+    @patch.object(JiraClient, 'search_issues')
+    def test_poll_cycle_no_snooze_record_found(self, mock_search):
+        plugin = self._make_plugin()
+        plugin._tracked_issues = {'OPS-1': 'hash_a'}
+
+        # OPS-1 closed
+        mock_search.return_value = []
+
+        plugin.client.record = MagicMock(return_value=[])
+        plugin.client.comment_batch = MagicMock()
+
+        plugin._poll_cycle()
+
+        # Record lookup was attempted but found nothing
+        plugin.client.record.assert_called_once_with(['=', 'hash', 'hash_a'])
+        # comment_batch should NOT be called since no record was found
+        plugin.client.comment_batch.assert_not_called()
+
+    @patch.object(JiraClient, 'search_issues')
+    def test_poll_cycle_uses_custom_jql(self, mock_search):
+        plugin = self._make_plugin({'poll_jql': 'project = INFRA AND status != Done'})
+        mock_search.return_value = []
+
+        plugin._poll_cycle()
+
+        call_kwargs = mock_search.call_args
+        assert call_kwargs[0][0] == 'project = INFRA AND status != Done'
+
+    @patch.object(JiraClient, 'search_issues')
+    def test_poll_cycle_default_jql_uses_cf_syntax(self, mock_search):
+        plugin = self._make_plugin()
+        mock_search.return_value = []
+
+        plugin._poll_cycle()
+
+        call_kwargs = mock_search.call_args
+        assert call_kwargs[0][0] == 'cf[10500] is not EMPTY AND statusCategory != Done'
+
+    def test_start_poller_disabled(self):
+        plugin = self._make_plugin({'poll_enabled': False})
+        plugin._start_poller()
+        assert not hasattr(plugin, '_poll_thread')
+
+    def test_start_poller_no_custom_field(self):
+        plugin = self._make_plugin({'poll_enabled': True, 'alert_hash_custom_field': ''})
+        plugin._start_poller()
+        assert not hasattr(plugin, '_poll_thread')
+
+    def test_extract_hash_from_url(self):
+        from snooze_jira.main import JiraPlugin
+        url = 'https://snooze.example.com/web/?#/record?tab=All&s=hash%3Dabc123'
+        assert JiraPlugin._extract_hash_from_field(url) == 'abc123'
+
+    def test_extract_hash_from_plain_string(self):
+        from snooze_jira.main import JiraPlugin
+        assert JiraPlugin._extract_hash_from_field('abc123') == 'abc123'
+
+    def test_extract_hash_from_empty(self):
+        from snooze_jira.main import JiraPlugin
+        assert JiraPlugin._extract_hash_from_field('') == ''
+        assert JiraPlugin._extract_hash_from_field(None) == ''
