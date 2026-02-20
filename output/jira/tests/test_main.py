@@ -173,6 +173,17 @@ class TestJiraClient:
         assert result[0]['id'] == '11'
         mock_request.assert_called_once_with('GET', '/issue/OPS-42/transitions')
 
+    @patch.object(JiraClient, '_request')
+    def test_set_issue_property(self, mock_request):
+        mock_request.return_value = {}
+        payload = {'created_by_plugin': 'snooze_jira', 'alert_hash': 'abc123'}
+        self.client.set_issue_property('OPS-42', 'snooze.metadata', payload)
+        mock_request.assert_called_once_with(
+            'PUT',
+            '/issue/OPS-42/properties/snooze.metadata',
+            json=payload,
+        )
+
     def test_find_user_by_email_single_result(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -395,6 +406,40 @@ class TestJiraPlugin:
         assert 'abc123' in result
         assert result['abc123']['issue_key'] == 'OPS-42'
         mock_create.assert_called_once()
+
+    @patch.object(JiraClient, 'set_issue_property')
+    @patch.object(JiraClient, 'create_issue')
+    def test_process_records_sets_snooze_metadata(self, mock_create, mock_set_property):
+        plugin = self._make_plugin()
+        mock_create.return_value = {'id': '10001', 'key': 'OPS-42'}
+        mock_set_property.return_value = {}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'alert': {
+                'uid': 'uid-123',
+                'hash': 'abc123',
+                'host': 'web01',
+                'source': 'nagios',
+                'process': 'httpd',
+                'severity': 'critical',
+                'message': 'HTTP down',
+            },
+        }]
+
+        plugin.process_records(req, medias)
+
+        mock_set_property.assert_called_once_with(
+            'OPS-42',
+            'snooze.metadata',
+            {
+                'created_by_plugin': 'snooze_jira',
+                'alert_hash': 'abc123',
+                'alert_uid': 'uid-123',
+            },
+        )
 
     @patch.object(JiraClient, 'add_comment')
     def test_process_records_existing_issue(self, mock_comment):

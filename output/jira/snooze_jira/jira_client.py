@@ -135,6 +135,19 @@ class JiraClient:
         result = self._request('GET', f'/issue/{issue_key}/transitions')
         return result.get('transitions', [])
 
+    def set_issue_property(self, issue_key, property_key, value):
+        """Set an issue property value on a JIRA issue.
+
+        Args:
+            issue_key: The issue key (e.g. 'OPS-123')
+            property_key: Property key name (e.g. 'snooze.metadata')
+            value: JSON-serializable dict or value to store
+
+        Returns:
+            dict response from JIRA (usually empty on success)
+        """
+        return self._request('PUT', f'/issue/{issue_key}/properties/{property_key}', json=value)
+
     def find_user_by_email(self, email):
         """Look up a JIRA user's accountId by email address.
 

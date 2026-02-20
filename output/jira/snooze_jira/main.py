@@ -89,6 +89,7 @@ class JiraPlugin:
 
         # Initial status: optionally transition newly created issues to a specific status
         self.initial_status = self.config.get('initial_status', '')
+        self.issue_metadata_property_key = self.config.get('issue_metadata_property_key', 'snooze.metadata')
 
     def process_alert(self, request, medias):
         """Entry point for processing alert webhooks."""
@@ -215,6 +216,27 @@ class JiraPlugin:
                     )
                     issue_key = result.get('key', '')
                     LOG.info("Created JIRA issue %s for record %s", issue_key, record_hash)
+
+                    # Persist Snooze-specific metadata directly on the issue.
+                    if issue_key and self.issue_metadata_property_key:
+                        metadata_payload = {
+                            'created_by_plugin': 'snooze_jira',
+                            'alert_hash': record_hash,
+                            'alert_uid': record.get('uid', ''),
+                        }
+                        try:
+                            self.jira.set_issue_property(
+                                issue_key,
+                                self.issue_metadata_property_key,
+                                metadata_payload,
+                            )
+                        except Exception as e:
+                            LOG.warning(
+                                "Failed to set issue metadata property '%s' on %s: %s",
+                                self.issue_metadata_property_key,
+                                issue_key,
+                                e,
+                            )
 
                     # Transition to initial status if configured
                     initial_status = req_media.get('initial_status', self.initial_status)
