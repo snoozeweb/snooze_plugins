@@ -869,6 +869,8 @@ class TeamsPoller(threading.Thread):
         self._checkpoints = {}
         self._lookback = timedelta(seconds=self.plugin.poll_lookback_seconds)
         self._recent_ids_limit = 2000
+        self._global_recent_ids = []
+        self._global_recent_id_set = set()
 
     def _get_checkpoint(self, resource):
         if resource in self._checkpoints:
@@ -889,6 +891,15 @@ class TeamsPoller(threading.Thread):
         if len(checkpoint['recent_ids']) > self._recent_ids_limit:
             old = checkpoint['recent_ids'].pop(0)
             checkpoint['recent_id_set'].discard(old)
+
+    def _remember_global_id(self, message_id):
+        if message_id in self._global_recent_id_set:
+            return
+        self._global_recent_ids.append(message_id)
+        self._global_recent_id_set.add(message_id)
+        if len(self._global_recent_ids) > self._recent_ids_limit:
+            old = self._global_recent_ids.pop(0)
+            self._global_recent_id_set.discard(old)
 
     def _parse_graph_datetime(self, text):
         if not text:
@@ -917,27 +928,31 @@ class TeamsPoller(threading.Thread):
                 self._process_graph_message(resource, reply, checkpoint)
 
     def _process_graph_message(self, resource, graph_message, checkpoint):
-            message_id = graph_message.get('id')
-            if not message_id:
-                return
-            if message_id in checkpoint['recent_id_set']:
-                return
-            created = self._parse_graph_datetime(graph_message.get('createdDateTime'))
-            if created and created <= checkpoint['since']:
-                self._remember_id(checkpoint, message_id)
-                return
+        message_id = graph_message.get('id')
+        if not message_id:
+            return
+        if message_id in self._global_recent_id_set:
+            return
+        if message_id in checkpoint['recent_id_set']:
+            return
+        created = self._parse_graph_datetime(graph_message.get('createdDateTime'))
+        if created and created <= checkpoint['since']:
             self._remember_id(checkpoint, message_id)
-            checkpoint['since'] = max(checkpoint['since'], created) if created else checkpoint['since']
-            if self.plugin.is_self_message(graph_message):
-                return
-            msg = self.plugin.normalize_incoming_message(graph_message)
-            if not getattr(msg, 'text', '').strip():
-                return
-            try:
-                response_text = self.plugin.process_user_message(msg)
-                self.plugin.reply_to_polled_message(response_text, resource, graph_message)
-            except Exception as e:
-                LOG.exception("Failed to process polled message %s on %s: %s", message_id, resource, e)
+            self._remember_global_id(message_id)
+            return
+        self._remember_id(checkpoint, message_id)
+        self._remember_global_id(message_id)
+        checkpoint['since'] = max(checkpoint['since'], created) if created else checkpoint['since']
+        if self.plugin.is_self_message(graph_message):
+            return
+        msg = self.plugin.normalize_incoming_message(graph_message)
+        if not getattr(msg, 'text', '').strip():
+            return
+        try:
+            response_text = self.plugin.process_user_message(msg)
+            self.plugin.reply_to_polled_message(response_text, resource, graph_message)
+        except Exception as e:
+            LOG.exception("Failed to process polled message %s on %s: %s", message_id, resource, e)
 
     def run(self):
         LOG.info("Starting Teams polling worker (interval=%ss)", self.plugin.poll_interval_seconds)
