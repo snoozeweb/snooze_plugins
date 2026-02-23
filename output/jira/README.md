@@ -44,7 +44,7 @@ Configuration hints:
   ```
   * Replace `OPS` with your JIRA project key
   * You can optionally add `"message": "Custom message"` to include extra context
-  * You can override per-alert: `"issue_type": "Bug"`, `"priority": "High"`, `"labels": ["critical", "snooze"]`, `"assignee": "<account_id_or_email>"`, `"reporter": "<account_id_or_email>"`, `"initial_status": "In Progress"`, `"custom_fields": {"customfield_10100": {"value": "Networking"}}`
+  * You can override per-alert: `"issue_type": "Bug"`, `"issue_type_id": "10001"`, `"priority": "High"`, `"labels": ["critical", "snooze"]`, `"assignee": "<account_id_or_email>"`, `"reporter": "<account_id_or_email>"`, `"initial_status": "In Progress"`, `"custom_fields": {"customfield_10100": {"value": "Networking"}}`
 * Check `Inject Response`
 * Check `Batch` if you want multiple alerts to create separate tickets
 
@@ -77,6 +77,7 @@ This plugin's configuration is in the following YAML file: `/etc/snooze/jira.yam
 | `jira_api_token` | String | **required** | JIRA API token (create at [Atlassian API tokens](https://id.atlassian.com/manage-profile/security/api-tokens)) |
 | `project_key` | String | **required** | Default JIRA project key (e.g. `OPS`) |
 | `issue_type` | String | `Task` | Default issue type (e.g. `Task`, `Bug`, `Story`) |
+| `issue_type_id` | String/Integer | | Default Jira issue type ID (e.g. `10001`). When set, it overrides `issue_type` |
 | `priority` | String | `Medium` | Default issue priority, used when severity is not found in `priority_mapping` |
 | `priority_mapping` | Dict | see below | Maps Snooze alert severity to JIRA priority name |
 | `labels` | List | `["snooze"]` | Default labels to add to created tickets |
@@ -108,6 +109,7 @@ jira_email: bot@mycompany.com
 jira_api_token: ATATT3xFfGF0...
 project_key: OPS
 issue_type: Task
+# issue_type_id: "10001"  # optional, overrides issue_type when set
 priority: Medium
 priority_mapping:
   emergency: "Critical"
@@ -144,6 +146,36 @@ listening_port: 5203
 snooze_url: https://snooze.mycompany.com
 message_limit: 10
 debug: false
+```
+
+## Issue Type Selection
+
+You can choose the Jira ticket type by name (e.g. `Task`, `Epic`, `Bug`) or by Jira issue type ID.
+
+Resolution order:
+1. Payload `issue_type_id`
+2. Payload `issue_type`
+3. Config `issue_type_id`
+4. Config `issue_type`
+
+If `issue_type_id` is set, Jira receives `issuetype.id`. Otherwise, Jira receives `issuetype.name`.
+
+**Payload example (Epic by name):**
+```json
+{
+  "project_key": "OPS",
+  "issue_type": "Epic",
+  "alert": {{ __self__ | tojson() }}
+}
+```
+
+**Payload example (type by ID):**
+```json
+{
+  "project_key": "OPS",
+  "issue_type_id": "10001",
+  "alert": {{ __self__ | tojson() }}
+}
 ```
 
 ## How It Works

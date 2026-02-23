@@ -65,6 +65,7 @@ class JiraPlugin:
         # Default issue settings
         self.default_project_key = self.config.get('project_key', '')
         self.default_issue_type = self.config.get('issue_type', 'Task')
+        self.default_issue_type_id = self.config.get('issue_type_id', '')
         self.default_priority = self.config.get('priority', 'Medium')
         self.default_labels = self.config.get('labels', ['snooze'])
         self.summary_template = self.config.get('summary_template', '[${severity}] ${host} - ${message}')
@@ -150,7 +151,20 @@ class JiraPlugin:
             else:
                 # Create a new JIRA issue
                 project_key = req_media.get('project_key', self.default_project_key)
-                issue_type = req_media.get('issue_type', self.default_issue_type)
+                issue_type = self.default_issue_type
+                issue_type_id = self.default_issue_type_id
+
+                payload_issue_type = req_media.get('issue_type')
+                payload_issue_type_id = req_media.get('issue_type_id')
+
+                # Precedence: payload issue_type_id > payload issue_type > config issue_type_id > config issue_type
+                if payload_issue_type not in (None, ''):
+                    issue_type = payload_issue_type
+                    issue_type_id = ''
+
+                if payload_issue_type_id not in (None, ''):
+                    issue_type_id = payload_issue_type_id
+
                 labels = req_media.get('labels', self.default_labels)
                 extra_fields = req_media.get('extra_fields', self.extra_fields)
 
@@ -223,6 +237,7 @@ class JiraPlugin:
                     result = self.jira.create_issue(
                         project_key=project_key,
                         issue_type=issue_type,
+                        issue_type_id=issue_type_id,
                         summary=summary,
                         description_adf=description_adf,
                         priority=priority,

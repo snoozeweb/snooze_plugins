@@ -126,6 +126,19 @@ class TestJiraClient:
         assert payload['fields']['components'] == [{'name': 'Infrastructure'}]
 
     @patch.object(JiraClient, '_request')
+    def test_create_issue_with_issue_type_id(self, mock_request):
+        mock_request.return_value = {'id': '10002', 'key': 'OPS-43'}
+        self.client.create_issue(
+            project_key='OPS',
+            issue_type='Task',
+            issue_type_id='10001',
+            summary='Issue by type id',
+            description_adf=JiraClient._text_to_adf('desc'),
+        )
+        payload = mock_request.call_args[1]['json']
+        assert payload['fields']['issuetype'] == {'id': '10001'}
+
+    @patch.object(JiraClient, '_request')
     def test_create_issue_priority_string_fallback(self, mock_request):
         error_response = MagicMock()
         error_response.json.return_value = {
@@ -546,6 +559,76 @@ class TestJiraPlugin:
         assert call_kwargs['project_key'] == 'INFRA'
         assert call_kwargs['issue_type'] == 'Bug'
         assert call_kwargs['priority'] == 'High'
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_process_records_issue_type_id_from_payload(self, mock_create):
+        plugin = self._make_plugin()
+        mock_create.return_value = {'id': '10002', 'key': 'INFRA-1'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'project_key': 'INFRA',
+            'issue_type': 'Bug',
+            'issue_type_id': '10002',
+            'priority': 'High',
+            'alert': {
+                'hash': 'itype1',
+                'host': 'db01',
+                'severity': 'warning',
+                'message': 'Disk space low',
+            },
+        }]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['issue_type'] == 'Bug'
+        assert call_kwargs['issue_type_id'] == '10002'
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_process_records_issue_type_id_from_config(self, mock_create):
+        plugin = self._make_plugin({'issue_type_id': '10005'})
+        mock_create.return_value = {'id': '10003', 'key': 'OPS-2'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'alert': {
+                'hash': 'itype2',
+                'host': 'db01',
+                'severity': 'warning',
+                'message': 'Disk space low',
+            },
+        }]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['issue_type_id'] == '10005'
+
+    @patch.object(JiraClient, 'create_issue')
+    def test_payload_issue_type_beats_config_issue_type_id(self, mock_create):
+        plugin = self._make_plugin({'issue_type_id': '10005', 'issue_type': 'Task'})
+        mock_create.return_value = {'id': '10004', 'key': 'OPS-3'}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'issue_type': 'Epic',
+            'alert': {
+                'hash': 'itype3',
+                'host': 'db01',
+                'severity': 'warning',
+                'message': 'Disk space low',
+            },
+        }]
+
+        plugin.process_records(req, medias)
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['issue_type'] == 'Epic'
+        assert call_kwargs['issue_type_id'] == ''
 
     @patch.object(JiraClient, 'create_issue')
     def test_priority_mapping_critical(self, mock_create):

@@ -67,7 +67,7 @@ class JiraClient:
         return {}
 
     def create_issue(self, project_key, issue_type, summary, description_adf,
-                     priority=None, labels=None, extra_fields=None):
+                     priority=None, labels=None, extra_fields=None, issue_type_id=None):
         """Create a new JIRA issue.
 
         Args:
@@ -78,16 +78,21 @@ class JiraClient:
             priority: Priority name (e.g. 'High', 'Medium')
             labels: List of label strings
             extra_fields: Dict of additional fields to set
+            issue_type_id: Jira issue type ID (e.g. '10001'). Overrides issue_type when set
 
         Returns:
             dict with 'id', 'key', 'self' of the created issue
         """
         fields = {
             'project': {'key': project_key},
-            'issuetype': {'name': issue_type},
             'summary': summary,
             'description': description_adf,
         }
+
+        if issue_type_id:
+            fields['issuetype'] = {'id': str(issue_type_id)}
+        else:
+            fields['issuetype'] = {'name': issue_type}
         if priority:
             fields['priority'] = {'name': priority}
         if labels:
