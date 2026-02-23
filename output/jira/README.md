@@ -44,7 +44,7 @@ Configuration hints:
   ```
   * Replace `OPS` with your JIRA project key
   * You can optionally add `"message": "Custom message"` to include extra context
-  * You can override per-alert: `"issue_type": "Bug"`, `"priority": "High"`, `"labels": ["critical", "snooze"]`, `"assignee": "<account_id_or_email>"`, `"reporter": "<account_id_or_email>"`, `"initial_status": "In Progress"`, `"custom_fields": {"customfield_10100": {"value": "Networking"}}`
+  * You can override per-alert: `"issue_type": "Bug"`, `"priority": "High"`, `"labels": ["critical", "snooze"]`, `"assignee": "<account_id_or_email>"`, `"reporter": "<account_id_or_email>"`, `"initial_status": "In Progress"`, `"board_id": 388`, `"board_url": "https://your-domain.atlassian.net/jira/software/c/projects/CG/boards/388"`, `"custom_fields": {"customfield_10100": {"value": "Networking"}}`
 * Check `Inject Response`
 * Check `Batch` if you want multiple alerts to create separate tickets
 
@@ -76,6 +76,8 @@ This plugin's configuration is in the following YAML file: `/etc/snooze/jira.yam
 | `jira_email` | String | **required** | Email address for JIRA API authentication |
 | `jira_api_token` | String | **required** | JIRA API token (create at [Atlassian API tokens](https://id.atlassian.com/manage-profile/security/api-tokens)) |
 | `project_key` | String | **required** | Default JIRA project key (e.g. `OPS`) |
+| `board_id` | Integer/String | | Default Jira board ID to resolve target project automatically (e.g. `388`) |
+| `board_url` | String | | Default Jira board URL to resolve target project automatically (alternative to `board_id`) |
 | `issue_type` | String | `Task` | Default issue type (e.g. `Task`, `Bug`, `Story`) |
 | `priority` | String | `Medium` | Default issue priority, used when severity is not found in `priority_mapping` |
 | `priority_mapping` | Dict | see below | Maps Snooze alert severity to JIRA priority name |
@@ -107,6 +109,7 @@ jira_url: https://mycompany.atlassian.net
 jira_email: bot@mycompany.com
 jira_api_token: ATATT3xFfGF0...
 project_key: OPS
+board_id: 388
 issue_type: Task
 priority: Medium
 priority_mapping:
@@ -144,6 +147,37 @@ listening_port: 5203
 snooze_url: https://snooze.mycompany.com
 message_limit: 10
 debug: false
+```
+
+## Board Targeting
+
+Jira issue creation is project-based. Jira does not accept a board ID directly in the issue create payload.
+
+To make board targeting easier, this plugin can resolve the project key from a board:
+
+- Configure either `board_id` or `board_url` in `jira.yaml`
+- Or override per alert with `board_id` / `board_url` in the webhook payload
+
+Resolution order for target project:
+1. `project_key` from webhook payload (if set)
+2. Project resolved from `board_id`/`board_url` (payload first, then config)
+3. `project_key` from plugin config
+
+If both payload `project_key` and board are set but point to different projects, payload `project_key` is used and a warning is logged.
+
+**Config example:**
+```yaml
+board_url: "https://helpdesk-egerie.atlassian.net/jira/software/c/projects/CG/boards/388"
+project_key: OPS  # fallback only if board resolution fails
+```
+
+**Per-alert payload example:**
+```json
+{
+  "board_id": 388,
+  "issue_type": "Bug",
+  "alert": {{ __self__ | tojson() }}
+}
 ```
 
 ## How It Works

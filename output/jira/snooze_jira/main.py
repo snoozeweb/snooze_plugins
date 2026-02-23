@@ -64,12 +64,15 @@ class JiraPlugin:
 
         # Default issue settings
         self.default_project_key = self.config.get('project_key', '')
+        self.default_board_id = self.config.get('board_id', '')
+        self.default_board_url = self.config.get('board_url', '')
         self.default_issue_type = self.config.get('issue_type', 'Task')
         self.default_priority = self.config.get('priority', 'Medium')
         self.default_labels = self.config.get('labels', ['snooze'])
         self.summary_template = self.config.get('summary_template', '[${severity}] ${host} - ${message}')
         self.description_template = self.config.get('description_template', '')
         self.extra_fields = self.config.get('extra_fields', {})
+        self._board_project_cache = {}
 
         # Priority mapping: maps Snooze severity to JIRA priority name
         self.priority_mapping = self.config.get('priority_mapping', {
@@ -149,7 +152,17 @@ class JiraPlugin:
                 return_value[record_hash] = {'issue_key': existing_issue}
             else:
                 # Create a new JIRA issue
-                project_key = req_media.get('project_key', self.default_project_key)
+                payload_project_key = req_media.get('project_key', '')
+                board_project_key = self._resolve_project_key_from_board(req_media)
+                project_key = payload_project_key or board_project_key or self.default_project_key
+
+                if payload_project_key and board_project_key and payload_project_key != board_project_key:
+                    LOG.warning(
+                        "Payload project_key '%s' differs from board project '%s'; using payload project_key",
+                        payload_project_key,
+                        board_project_key,
+                    )
+
                 issue_type = req_media.get('issue_type', self.default_issue_type)
                 labels = req_media.get('labels', self.default_labels)
                 extra_fields = req_media.get('extra_fields', self.extra_fields)
@@ -249,6 +262,65 @@ class JiraPlugin:
             )
 
         return return_value
+
+    @staticmethod
+    def _extract_board_id(board_value):
+        """Extract a board ID from a numeric value or a Jira board URL."""
+        if board_value is None:
+            return None
+
+        board_str = str(board_value).strip()
+        if not board_str:
+            return None
+
+        if board_str.isdigit():
+            return board_str
+
+        match = re.search(r'/boards/(\d+)', board_str)
+        if match:
+            return match.group(1)
+
+        return None
+
+    def _resolve_project_key_from_board(self, req_media):
+        """Resolve a Jira project key from board_id/board_url (payload overrides config)."""
+        board_ref = req_media.get('board_id')
+        if board_ref is None or board_ref == '':
+            board_ref = req_media.get('board_url')
+        if board_ref is None or board_ref == '':
+            board_ref = self.default_board_id
+        if board_ref is None or board_ref == '':
+            board_ref = self.default_board_url
+
+        board_id = self._extract_board_id(board_ref)
+        if not board_id:
+            if board_ref:
+                LOG.warning("Could not extract Jira board id from '%s'", board_ref)
+            return ''
+
+        if board_id in self._board_project_cache:
+            return self._board_project_cache[board_id]
+
+        try:
+            board_config = self.jira.get_board_configuration(board_id)
+            location = board_config.get('location', {})
+            project_key = location.get('projectKey', '')
+
+            if not project_key:
+                board = self.jira.get_board(board_id)
+                location = board.get('location', {})
+                project_key = location.get('projectKey', '')
+
+            if project_key:
+                self._board_project_cache[board_id] = project_key
+                LOG.info("Resolved board %s to project key '%s'", board_id, project_key)
+                return project_key
+
+            LOG.warning("Board %s has no resolvable project key in board location", board_id)
+            return ''
+        except Exception as e:
+            LOG.warning("Failed to resolve project from board '%s': %s", board_id, e)
+            return ''
 
     def _find_existing_issue(self, record, action_name):
         """Look for an existing JIRA issue key in the record's webhook responses.

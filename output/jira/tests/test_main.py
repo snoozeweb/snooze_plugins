@@ -221,6 +221,20 @@ class TestJiraClient:
         result = self.client.search_issues('project = OPS AND status = Done')
         assert result == []
 
+    @patch.object(JiraClient, '_agile_request')
+    def test_get_board_configuration(self, mock_agile_request):
+        mock_agile_request.return_value = {'id': 388, 'location': {'projectKey': 'CG'}}
+        result = self.client.get_board_configuration(388)
+        assert result['location']['projectKey'] == 'CG'
+        mock_agile_request.assert_called_once_with('GET', '/board/388/configuration')
+
+    @patch.object(JiraClient, '_agile_request')
+    def test_get_board(self, mock_agile_request):
+        mock_agile_request.return_value = {'id': 388, 'location': {'projectKey': 'CG'}}
+        result = self.client.get_board(388)
+        assert result['id'] == 388
+        mock_agile_request.assert_called_once_with('GET', '/board/388')
+
     def test_find_user_by_email_single_result(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -331,6 +345,79 @@ class TestJiraPlugin:
         result = plugin._format_description(record)
         assert 'snooze.example.com' in result['content'][1]['content'][0]['text']
         assert 'abc123' in result['content'][1]['content'][0]['text']
+
+    def test_extract_board_id_from_number(self):
+        plugin = self._make_plugin()
+        assert plugin._extract_board_id(388) == '388'
+
+    def test_extract_board_id_from_url(self):
+        plugin = self._make_plugin()
+        url = 'https://helpdesk-egerie.atlassian.net/jira/software/c/projects/CG/boards/388'
+        assert plugin._extract_board_id(url) == '388'
+
+    @patch.object(JiraClient, 'get_board_configuration')
+    def test_resolve_project_key_from_board_id(self, mock_get_board_configuration):
+        plugin = self._make_plugin({'project_key': ''})
+        mock_get_board_configuration.return_value = {'location': {'projectKey': 'CG'}}
+
+        req_media = {'board_id': 388, 'alert': {'hash': 'board1'}}
+
+        project_key = plugin._resolve_project_key_from_board(req_media)
+        assert project_key == 'CG'
+        mock_get_board_configuration.assert_called_once_with('388')
+
+    @patch.object(JiraClient, 'get_board_configuration')
+    @patch.object(JiraClient, 'create_issue')
+    def test_process_records_board_url_resolves_project(self, mock_create, mock_get_board_configuration):
+        plugin = self._make_plugin({'project_key': ''})
+        mock_create.return_value = {'id': '10023', 'key': 'CG-1'}
+        mock_get_board_configuration.return_value = {'location': {'projectKey': 'CG'}}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'board_url': 'https://helpdesk-egerie.atlassian.net/jira/software/c/projects/CG/boards/388',
+            'alert': {
+                'hash': 'board2',
+                'host': 'web01',
+                'severity': 'critical',
+                'message': 'HTTP down',
+            },
+        }]
+
+        plugin.process_records(req, medias)
+
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['project_key'] == 'CG'
+
+    @patch.object(JiraClient, 'get_board_configuration')
+    @patch.object(JiraClient, 'create_issue')
+    def test_payload_project_key_wins_on_board_mismatch(self, mock_create, mock_get_board_configuration, caplog):
+        plugin = self._make_plugin()
+        mock_create.return_value = {'id': '10024', 'key': 'INFRA-2'}
+        mock_get_board_configuration.return_value = {'location': {'projectKey': 'CG'}}
+
+        req = MagicMock()
+        req.params = {'snooze_action_name': 'jira_action'}
+
+        medias = [{
+            'project_key': 'INFRA',
+            'board_id': 388,
+            'alert': {
+                'hash': 'board3',
+                'host': 'db01',
+                'severity': 'warning',
+                'message': 'Disk space low',
+            },
+        }]
+
+        with caplog.at_level('WARNING'):
+            plugin.process_records(req, medias)
+
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['project_key'] == 'INFRA'
+        assert "using payload project_key" in caplog.text
 
     @patch.object(JiraClient, 'create_issue')
     def test_description_template_used_in_process_records(self, mock_create):
