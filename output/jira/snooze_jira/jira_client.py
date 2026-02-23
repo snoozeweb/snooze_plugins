@@ -66,40 +66,6 @@ class JiraClient:
                     raise
         return {}
 
-    def _agile_request(self, method, path, retries=3):
-        """Execute an HTTP request against Jira Software Agile API."""
-        url = f"{self.base_url}/rest/agile/1.0{path}"
-        for attempt in range(retries):
-            try:
-                resp = self.session.request(method, url, verify=self.verify_ssl)
-                resp.raise_for_status()
-                if resp.status_code == 204 or not resp.content:
-                    return {}
-                return resp.json()
-            except HTTPError as e:
-                response = e.response
-                status = getattr(response, 'status_code', 'unknown')
-                body = (getattr(response, 'text', '') or '').strip()
-                LOG.warning(
-                    "JIRA Agile API request failed (attempt %d/%d): HTTP %s %s body=%s",
-                    attempt + 1,
-                    retries,
-                    status,
-                    method,
-                    body,
-                )
-                if attempt < retries - 1:
-                    time.sleep(1)
-                else:
-                    raise
-            except Exception as e:
-                LOG.warning("JIRA Agile API request failed (attempt %d/%d): %s", attempt + 1, retries, e)
-                if attempt < retries - 1:
-                    time.sleep(1)
-                else:
-                    raise
-        return {}
-
     def create_issue(self, project_key, issue_type, summary, description_adf,
                      priority=None, labels=None, extra_fields=None):
         """Create a new JIRA issue.
@@ -237,14 +203,6 @@ class JiraClient:
             payload['fields'] = fields
         result = self._request('POST', '/search/jql', json=payload)
         return result.get('issues', [])
-
-    def get_board_configuration(self, board_id):
-        """Get Jira board configuration for a board id."""
-        return self._agile_request('GET', f'/board/{board_id}/configuration')
-
-    def get_board(self, board_id):
-        """Get Jira board details for a board id."""
-        return self._agile_request('GET', f'/board/{board_id}')
 
     def find_user_by_email(self, email):
         """Look up a JIRA user's accountId by email address.
