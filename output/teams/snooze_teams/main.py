@@ -436,6 +436,8 @@ class TeamsPlugin(SnoozeBotPlugin):
         return '{}@thread.tacv2'.format(channel_ref)
 
     def _normalize_channels_in_path(self, path):
+        # Normalize /channel/ (singular) to /channels/ (plural)
+        path = re.sub(r'/channel/', '/channels/', path)
         def add_suffix(match):
             return '/channels/{}'.format(self._normalize_channel_ref(match.group(1)))
         return re.sub(r'/channels/([^/\?]+)', add_suffix, path)
@@ -820,6 +822,44 @@ class TeamsPlugin(SnoozeBotPlugin):
 
         if from_message:
             parts.append(from_message)
+
+        if len(message['messages']) == 1:
+            msg = message['messages'][0].get('msg', {})
+            record = msg.get('record', {})
+            if record:
+                host = html.escape(record.get('host', 'Unknown'))
+                source = html.escape(record.get('source', 'Unknown'))
+                process = html.escape(record.get('process', 'Unknown'))
+                severity = html.escape(record.get('severity', 'Unknown'))
+                alert_message = html.escape(record.get('message', ''))
+                record_hash = record.get('hash', '')
+                timestamp = SnoozeBotPlugin.date_regex.sub(
+                    lambda m: parser.parse(m.group()).astimezone().strftime(self.date_format),
+                    record.get('timestamp', str(datetime.now().astimezone()))
+                )
+                timestamp = html.escape(timestamp)
+
+                link = '<a href="{}/web/?#/record?tab=All&s=hash%3D{}">{}</a>'.format(website, record_hash, host)
+                parts.append('<i>{}</i>'.format(timestamp))
+                parts.append('<hr>')
+                parts.append('<b>Host</b>: {}'.format(link))
+                parts.append('<b>Source</b>: {}'.format(source))
+                parts.append('<b>Process</b>: {}'.format(process))
+                parts.append('<b>Severity</b>: {}'.format(severity))
+                if alert_message:
+                    parts.append('{}'.format(alert_message))
+                if msg.get('from'):
+                    notif = 'From <b>{}</b>'.format(html.escape(msg.get('from')))
+                    if msg.get('from_msg'):
+                        notif += ': {}'.format(html.escape(msg.get('from_msg')))
+                    parts.append(notif)
+                if msg.get('message'):
+                    parts.append('<br><i>{}</i>'.format(html.escape(msg.get('message'))))
+
+                if message.get('footer'):
+                    parts.append('<hr>Check all alerts in <a href="{}/web">Snoozeweb</a>'.format(website))
+
+                return {'body': {'content': '{}<br>{}'.format(TeamsPlugin.BOT_MARKER, '<br>'.join(parts)), 'contentType': 'html'}}
 
         for msg_item in message['messages']:
             msg = msg_item.get('msg', {})
